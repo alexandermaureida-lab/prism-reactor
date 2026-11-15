@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   mac:
     runs-on: macos-latest
@@ -45,6 +48,16 @@ jobs:
         with:
           name: PrismReactor-mac
           path: dist/PrismReactor-mac.zip
+
+      - name: Publish release (descarga directa)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete mac-latest --cleanup-tag -y || true
+          gh release create mac-latest dist/PrismReactor-mac.zip \
+            --title "Prism Reactor para Mac (VST3 + AU)" \
+            --notes "Universal (Apple Silicon + Intel). Descomprime y ejecuta INSTALAR.command; luego Rescan en Ableton Live."
 
   other:
     strategy:
