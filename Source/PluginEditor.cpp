@@ -418,13 +418,21 @@ void TunePanel::resized()
 
 //==============================================================================
 PrismEditor::PrismEditor (PrismProcessor& p)
-    : AudioProcessorEditor (&p), proc (p), canvas (p), panel (p)
+    : AudioProcessorEditor (&p), proc (p), canvas (p), panel (p), autoPanel (p.automation)
 {
     addAndMakeVisible (canvas);
 
     title.setText ("tune", dontSendNotification);
     title.setColour (Label::textColourId, Colours::white);
     addAndMakeVisible (title);
+
+    autoButton.setClickingTogglesState (true);
+    autoButton.setColour (TextButton::buttonColourId, Colours::white.withAlpha (0.05f));
+    autoButton.setColour (TextButton::buttonOnColourId, kAccent.withAlpha (0.3f));
+    autoButton.setColour (TextButton::textColourOffId, Colours::white.withAlpha (0.85f));
+    autoButton.onClick = [this] { autoPanel.setVisible (autoButton.getToggleState()); resized(); };
+    addAndMakeVisible (autoButton);
+    addChildComponent (autoPanel);
 
     viewport.setViewedComponent (&panel, false);
     viewport.setScrollBarsShown (true, false);
@@ -444,8 +452,11 @@ void PrismEditor::resized()
 {
     auto area = getLocalBounds();
     auto right = area.removeFromRight (344);
+    if (autoPanel.isVisible()) autoPanel.setBounds (area.removeFromBottom (AutomationPanel::preferredHeight));
     canvas.setBounds (area);
-    title.setBounds (right.removeFromTop (34).reduced (14, 6));
+    auto header = right.removeFromTop (34).reduced (14, 6);
+    autoButton.setBounds (header.removeFromRight (110));
+    title.setBounds (header);
     viewport.setBounds (right);
     panel.setSize (right.getWidth() - viewport.getScrollBarThickness(), panel.getContentHeight());
     panel.resized();

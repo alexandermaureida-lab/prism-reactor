@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include "PluginProcessor.h"
+#include "AutomationPanel.h"
 
 // Three-pass GLSL renderer: scene -> trails (ping-pong feedback) -> final grade.
 class GLCanvas : public juce::Component, private juce::OpenGLRenderer
@@ -116,6 +117,8 @@ private:
     TunePanel panel;
     juce::Viewport viewport;
     juce::Label title;
+    juce::TextButton autoButton { "AUTOMATION" };
+    AutomationPanel autoPanel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PrismEditor)
 };

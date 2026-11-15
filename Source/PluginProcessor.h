@@ -2,6 +2,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Analyzer.h"
 #include "Params.h"
+#include "AutomationEngine.h"
 
 class PrismProcessor : public juce::AudioProcessor
 {
@@ -36,6 +37,7 @@ public:
     static void randomizeLook (juce::AudioProcessorValueTreeState&);
 
     juce::AudioProcessorValueTreeState apvts;
+    AutomationEngine automation { apvts };
     Analyzer analyzer;
 
 private:

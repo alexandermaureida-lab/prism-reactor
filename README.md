@@ -82,3 +82,6 @@ shaders/                 GLSL compartido por plugin y web
 - Parpadeos intensos: el efecto Glitch con beats rápidos puede ser molesto para personas fotosensibles. Considera advertirlo si lo distribuyes.
 - Para alimentar visuales con otra pista, usa *sidechain* o un Send hacia una pista con el plugin.
 - Pendiente (ideas): editor de automatización propio, export de video, más escenas, entrada de color por MIDI.
+
+## Automation in the Standalone / plugin editor
+Press **AUTOMATION** (top right) to open the timeline strip: PLAY, ● REC (move any control while playing to record a lane), click on a lane to add points, drag to move, double‑click / right‑click to delete, M = mute lane, SAVE/LOAD JSON. Lanes are stored with the plugin state. The clock is an internal loop (not host‑synced); in Live, map parameters to macros for timeline automation.

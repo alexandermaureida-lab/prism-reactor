@@ -36,7 +36,9 @@ juce_add_plugin(PrismReactor
 
 target_sources(PrismReactor PRIVATE
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp)
+    Source/PluginEditor.cpp
+    Source/AutomationEngine.cpp
+    Source/AutomationPanel.cpp)
 
 target_compile_definitions(PrismReactor PUBLIC
     JUCE_WEB_BROWSER=0

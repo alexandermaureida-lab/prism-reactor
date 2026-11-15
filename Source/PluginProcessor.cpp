@@ -113,6 +113,7 @@ juce::AudioProcessorEditor* PrismProcessor::createEditor()
 
 void PrismProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
+    apvts.state.setProperty ("automation", juce::JSON::toString (automation.toVar(), true), nullptr);
     if (auto xml = apvts.copyState().createXml())
         copyXmlToBinary (*xml, dest);
 }
@@ -121,7 +122,11 @@ void PrismProcessor::setStateInformation (const void* data, int size)
 {
     if (auto xml = getXmlFromBinary (data, size))
         if (xml->hasTagName (apvts.state.getType()))
+        {
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            const auto saved = apvts.state.getProperty ("automation").toString();
+            if (saved.isNotEmpty()) automation.fromVar (juce::JSON::parse (saved));
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
