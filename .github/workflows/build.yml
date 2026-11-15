@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal arm64 + x86_64)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build VST3 + AU
+        run: cmake --build build --config Release --parallel --target PrismReactor_VST3 PrismReactor_AU
+
+      - name: Sign (ad-hoc) and package
+        run: |
+          OUT=build/PrismReactor_artefacts/Release
+          mkdir -p dist/PrismReactor-mac
+          cp -R "$OUT/VST3/Prism Reactor.vst3" dist/PrismReactor-mac/
+          cp -R "$OUT/AU/Prism Reactor.component" dist/PrismReactor-mac/
+          cat > dist/PrismReactor-mac/INSTALAR.command <<'SH'
+          #!/usr/bin/env bash
+          cd "$(dirname "$0")"
+          mkdir -p ~/Library/Audio/Plug-Ins/VST3 ~/Library/Audio/Plug-Ins/Components
+          rm -rf ~/Library/Audio/Plug-Ins/VST3/"Prism Reactor.vst3" ~/Library/Audio/Plug-Ins/Components/"Prism Reactor.component"
+          cp -R "Prism Reactor.vst3" ~/Library/Audio/Plug-Ins/VST3/
+          cp -R "Prism Reactor.component" ~/Library/Audio/Plug-Ins/Components/
+          xattr -cr ~/Library/Audio/Plug-Ins/VST3/"Prism Reactor.vst3" ~/Library/Audio/Plug-Ins/Components/"Prism Reactor.component"
+          codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/VST3/"Prism Reactor.vst3"
+          codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/Components/"Prism Reactor.component"
+          echo "Instalado. En Ableton Live: Settings > Plug-Ins > Rescan."
+          SH
+          chmod +x dist/PrismReactor-mac/INSTALAR.command
+          codesign --force --deep --sign - "dist/PrismReactor-mac/Prism Reactor.vst3"
+          codesign --force --deep --sign - "dist/PrismReactor-mac/Prism Reactor.component"
+          lipo -archs "dist/PrismReactor-mac/Prism Reactor.vst3/Contents/MacOS/Prism Reactor"
+          cd dist && ditto -c -k --keepParent PrismReactor-mac PrismReactor-mac.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrismReactor-mac
+          path: dist/PrismReactor-mac.zip
+
+  other:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl1-mesa-dev libx11-dev libxrandr-dev \
+            libxinerama-dev libxcursor-dev libxext-dev libfreetype-dev
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --config Release --target PrismReactor_VST3 --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrismReactor-${{ runner.os }}
+          path: build/PrismReactor_artefacts/Release/VST3/
