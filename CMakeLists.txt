@@ -29,6 +29,8 @@ juce_add_plugin(PrismReactor
     NEEDS_MIDI_OUTPUT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Prism Reactor necesita la entrada de audio para reaccionar a la música."
     AU_MAIN_TYPE kAudioUnitType_Effect
     VST3_CATEGORIES Fx Analyzer)
 

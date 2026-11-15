@@ -18,7 +18,7 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
       - name: Build VST3 + AU
-        run: cmake --build build --config Release --parallel --target PrismReactor_VST3 PrismReactor_AU
+        run: cmake --build build --config Release --parallel --target PrismReactor_VST3 PrismReactor_AU PrismReactor_Standalone
 
       - name: Sign (ad-hoc) and package
         run: |
@@ -26,6 +26,7 @@ jobs:
           mkdir -p dist/PrismReactor-mac
           cp -R "$OUT/VST3/Prism Reactor.vst3" dist/PrismReactor-mac/
           cp -R "$OUT/AU/Prism Reactor.component" dist/PrismReactor-mac/
+          cp -R "$OUT/Standalone/Prism Reactor.app" dist/PrismReactor-mac/
           cat > dist/PrismReactor-mac/INSTALAR.command <<'SH'
           #!/usr/bin/env bash
           cd "$(dirname "$0")"
@@ -36,11 +37,17 @@ jobs:
           xattr -cr ~/Library/Audio/Plug-Ins/VST3/"Prism Reactor.vst3" ~/Library/Audio/Plug-Ins/Components/"Prism Reactor.component"
           codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/VST3/"Prism Reactor.vst3"
           codesign --force --deep --sign - ~/Library/Audio/Plug-Ins/Components/"Prism Reactor.component"
-          echo "Instalado. En Ableton Live: Settings > Plug-Ins > Rescan."
+          mkdir -p ~/Applications
+          rm -rf ~/Applications/"Prism Reactor.app"
+          cp -R "Prism Reactor.app" ~/Applications/
+          xattr -cr ~/Applications/"Prism Reactor.app"
+          codesign --force --deep --sign - ~/Applications/"Prism Reactor.app"
+          echo "Instalado. Standalone en ~/Applications. En Ableton Live: Settings > Plug-Ins > Rescan."
           SH
           chmod +x dist/PrismReactor-mac/INSTALAR.command
           codesign --force --deep --sign - "dist/PrismReactor-mac/Prism Reactor.vst3"
           codesign --force --deep --sign - "dist/PrismReactor-mac/Prism Reactor.component"
+          codesign --force --deep --sign - "dist/PrismReactor-mac/Prism Reactor.app"
           lipo -archs "dist/PrismReactor-mac/Prism Reactor.vst3/Contents/MacOS/Prism Reactor"
           cd dist && ditto -c -k --keepParent PrismReactor-mac PrismReactor-mac.zip
 
@@ -56,7 +63,7 @@ jobs:
         run: |
           gh release delete mac-latest --cleanup-tag -y || true
           gh release create mac-latest dist/PrismReactor-mac.zip \
-            --title "Prism Reactor para Mac (VST3 + AU)" \
+            --title "Prism Reactor para Mac (VST3 + AU + Standalone)" \
             --notes "Universal (Apple Silicon + Intel). Descomprime y ejecuta INSTALAR.command; luego Rescan en Ableton Live."
 
   other:
