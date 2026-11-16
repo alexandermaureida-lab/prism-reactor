@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "Shaders.h"
+#include <thread>
 
 using namespace juce;
 
@@ -76,6 +77,8 @@ void GLCanvas::openGLContextClosing()
     using namespace juce::gl;
     scenePass.prog.reset(); feedbackPass.prog.reset(); finalPass.prog.reset();
     fbScene.release(); fbTrail[0].release(); fbTrail[1].release();
+    if (job != nullptr) { job->fbOut.release(); job->sink->abort(); job.reset(); exportPhase = 0; }
+    if (pendingJob != nullptr) { pendingJob->sink->abort(); pendingJob.reset(); exportPhase = 0; }
     if (vbo != 0) { glDeleteBuffers (1, &vbo); vbo = 0; }
 }
 
@@ -120,11 +123,33 @@ void GLCanvas::renderOpenGL()
     jassert (OpenGLHelpers::isContextActive());
 
     const float scale = (float) ctx.getRenderingScale();
-    const int w = roundToInt (scale * (float) getWidth());
-    const int h = roundToInt (scale * (float) getHeight());
+    const int physW = roundToInt (scale * (float) getWidth());
+    const int physH = roundToInt (scale * (float) getHeight());
+
+    // pick up a newly requested export
+    {
+        const ScopedLock sl (jobLock);
+        if (pendingJob != nullptr && job == nullptr)
+        {
+            job = std::move (pendingJob);
+            phase = spinAng = huePhase = 0.0f;
+            fbScene.release();                       // force fresh (cleared) targets
+            ctx.setSwapInterval (0);                 // render as fast as the GPU allows
+        }
+    }
+    const bool exporting = job != nullptr;
+    if (exporting && exportCancel.load()) { endExportJob (true); return; }
 
     OpenGLHelpers::clear (Colour (0xff05070a));
-    if (scenePass.prog == nullptr || feedbackPass.prog == nullptr || finalPass.prog == nullptr || w < 2 || h < 2)
+    int w = physW, h = physH;
+    if (exporting) { w = job->s.width; h = job->s.height; }
+    else
+    {
+        const float ps = jlimit (0.2f, 1.0f, proc.previewScale.load());
+        w = jmax (2, roundToInt ((float) physW * ps));
+        h = jmax (2, roundToInt ((float) physH * ps));
+    }
+    if (scenePass.prog == nullptr || feedbackPass.prog == nullptr || finalPass.prog == nullptr || physW < 2 || physH < 2)
         return;
 
     ensureTargets (w, h);
@@ -134,14 +159,27 @@ void GLCanvas::renderOpenGL()
     auto P = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
 
     const double now = Time::getMillisecondCounterHiRes() * 0.001;
-    const float dt = (float) jlimit (0.0, 0.1, now - lastTime);
+    float dt = (float) jlimit (0.0, 0.1, now - lastTime);
     lastTime = now;
-    const float clock = (float) std::fmod (now, 1000.0);
+    float clock = (float) std::fmod (now, 1000.0);
+
+    const Analyzer* anPtr = &proc.analyzer;
+    if (exporting)
+    {
+        auto& j = *job;
+        dt = 1.0f / (float) j.s.fps;
+        clock = (float) std::fmod ((double) j.frame / (double) j.s.fps, 1000.0);
+        const juce::int64 target = jmin ((juce::int64) j.mono.getNumSamples(), (juce::int64) ((double) (j.frame + 1) * j.sampleRate / (double) j.s.fps));
+        const float* src = j.mono.getReadPointer (0);
+        for (; j.samplePos < target; ++j.samplePos) j.analyzer.pushSample (src[j.samplePos]);
+        applyExportAutomation (j);
+        anPtr = &j.analyzer;
+    }
 
     // analysis + input EQ
     float eq[kNumEq];
     for (int i = 0; i < kNumEq; ++i) eq[i] = P (kEqIds[i]);
-    const auto& an = proc.analyzer;
+    const auto& an = *anPtr;
     for (int i = 0; i < Analyzer::numBars; ++i)
         bars[(size_t) i] = jlimit (0.0f, 1.0f, an.getBar (i) + eqAt (eq, (float) i / (Analyzer::numBars - 1)) * (12.0f / 66.0f));
 
@@ -214,22 +252,158 @@ void GLCanvas::renderOpenGL()
     fbTrail[next].releaseAsRenderingTarget();
     current = next;
 
-    // pass 3: final grade to the screen
-    glBindFramebuffer (GL_FRAMEBUFFER, ctx.getFrameBufferID());
-    glViewport (0, 0, w, h);
+    // pass 3: final grade (to the export frame buffer and/or to the screen)
+    auto drawFinal = [&] (int vw, int vh)
     {
+        glViewport (0, 0, vw, vh);
         auto& N = finalPass; N.prog->use();
         glActiveTexture (GL_TEXTURE0); glBindTexture (GL_TEXTURE_2D, fbTrail[current].getTextureID());
         i1 (N, "uTex", 0);
-        f2 (N, "uRes", (float) w, (float) h); f1 (N, "uClock", clock);
+        f2 (N, "uRes", (float) vw, (float) vh); f1 (N, "uClock", clock);
         f1 (N, "uLevel", level * react); f1 (N, "uBeat", beat * react);
         f1 (N, "uGlow", P ("glow") / 100.0f * 1.5f); f1 (N, "uBright", P ("brightness") / 100.0f);
         f1 (N, "uHeat", heat); f1 (N, "uLens", P ("lens") / 100.0f);
         i1 (N, "uLensStyle", (int) P ("lensStyle")); f1 (N, "uVig", P ("vignette") / 100.0f);
         drawQuad (N);
+    };
+
+    if (exporting)
+    {
+        auto& j = *job;
+        if (j.firstFrame)
+        {
+            j.fbOut.initialise (ctx, w, h);
+            j.pixels.assign ((size_t) w * (size_t) h * 4, 0);
+            j.firstFrame = false;
+        }
+        j.fbOut.makeCurrentRenderingTarget();
+        drawFinal (w, h);
+        glPixelStorei (GL_PACK_ALIGNMENT, 1);
+        glReadPixels (0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, j.pixels.data());
+        j.fbOut.releaseAsRenderingTarget();
+        if (! j.sink->addFrame (j.pixels.data(), j.error)) { endExportJob (false); return; }
+        ++j.frame;
+        exportFrame = j.frame;
     }
+
+    glBindFramebuffer (GL_FRAMEBUFFER, ctx.getFrameBufferID());
+    drawFinal (physW, physH);
     glActiveTexture (GL_TEXTURE1); glBindTexture (GL_TEXTURE_2D, 0);
     glActiveTexture (GL_TEXTURE0); glBindTexture (GL_TEXTURE_2D, 0);
+
+    if (exporting && job->frame >= job->total) endExportJob (false);
+}
+
+//==============================================================================
+bool GLCanvas::startExport (const ExportSettings& s, String& error)
+{
+    if (exportPhase.load() != 0) { error = "An export is already running"; return false; }
+    if (! VideoSink::isAvailable()) { error = "Video export is only available on macOS for now."; return false; }
+
+    AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<AudioFormatReader> reader (fm.createReaderFor (s.audio));
+    if (reader == nullptr || reader->lengthInSamples <= 0 || reader->sampleRate <= 0.0)
+    { error = "Cannot read that audio file. Use WAV, AIFF, MP3, M4A or FLAC."; return false; }
+
+    auto j = std::make_unique<ExportJob>();
+    j->s = s;
+    j->s.width = jmax (2, s.width & ~1); j->s.height = jmax (2, s.height & ~1);
+    j->sampleRate = reader->sampleRate;
+    const auto len = (int) jmin ((int64) 0x7fffffff, reader->lengthInSamples);
+    j->mono.setSize (1, len);
+    j->mono.clear();
+    {
+        AudioBuffer<float> chunk ((int) reader->numChannels, 65536);
+        for (int pos = 0; pos < len; pos += 65536)
+        {
+            const int n = jmin (65536, len - pos);
+            reader->read (&chunk, 0, n, pos, true, true);
+            for (int c = 0; c < chunk.getNumChannels(); ++c)
+                j->mono.addFrom (0, pos, chunk, c, 0, n, 1.0f / (float) chunk.getNumChannels());
+        }
+    }
+    j->total = (juce::int64) std::floor ((double) len / j->sampleRate * (double) s.fps);
+    if (j->total < 1) { error = "The audio file is too short"; return false; }
+    j->analyzer.prepare (j->sampleRate);
+
+    j->sink = VideoSink::create();
+    if (j->sink == nullptr) { error = "Video export is not available on this system"; return false; }
+    if (! j->sink->begin (s.output, j->s.width, j->s.height, s.fps, s.mbps, s.audio, error)) return false;
+
+    // freeze the automation lanes: the export follows them from t = 0
+    auto& eng = proc.automation;
+    eng.setPlaying (false); eng.setRecording (false);
+    j->loopLen = eng.getLoopLength();
+    for (auto& l : eng.getLanes())
+        if (! l->mute && ! l->pts.empty())
+            j->lanes.push_back ({ l->param, l->pts, l->discrete() });
+    restoreValues.clear();
+    for (auto* prm : eng.allParams()) restoreValues.push_back ({ prm, prm->getValue() });
+
+    exportOutputPath = s.output.getFullPathName();
+    exportCancel = false; exportFrame = 0; exportTotal = j->total; exportPhase = 1;
+    const ScopedLock sl (jobLock);
+    pendingJob = std::move (j);
+    return true;
+}
+
+void GLCanvas::applyExportAutomation (const ExportJob& j)
+{
+    if (j.lanes.empty()) return;
+    const double t = std::fmod ((double) j.frame / (double) j.s.fps, j.loopLen);
+    for (auto& l : j.lanes)
+    {
+        const auto& p = l.pts;
+        float v;
+        if (t <= p.front().t) v = p.front().v;
+        else if (t >= p.back().t) v = p.back().v;
+        else
+        {
+            size_t lo = 0, hi = p.size() - 1;
+            while (hi - lo > 1) { const size_t mid = (lo + hi) / 2; if (p[mid].t <= t) lo = mid; else hi = mid; }
+            const double f = (t - p[lo].t) / jmax (1.0e-9, p[hi].t - p[lo].t);
+            v = l.discrete ? p[lo].v : (float) (p[lo].v + (p[hi].v - p[lo].v) * f);
+        }
+        if (std::abs (l.param->getValue() - v) > 1.0e-5f) l.param->setValueNotifyingHost (v);
+    }
+}
+
+void GLCanvas::endExportJob (bool cancelled)
+{
+    // GL thread
+    auto finished = std::move (job);
+    job.reset();
+    ctx.setSwapInterval (1);
+    fbScene.release();
+    finished->fbOut.release();
+    exportPhase = 2;
+    auto sink = finished->sink;
+    const String err = finished->error;
+    const bool ok = ! cancelled && err.isEmpty();
+    Component::SafePointer<GLCanvas> self (this);
+
+    if (! ok)
+    {
+        sink->abort();
+        const String msg = cancelled ? String ("Export cancelled") : err;
+        MessageManager::callAsync ([self, msg] { if (self != nullptr) self->finishExportOnMessageThread (false, msg); });
+        return;
+    }
+    std::thread ([sink, self]
+    {
+        String e;
+        const bool done = sink->finish (e);
+        MessageManager::callAsync ([self, done, e] { if (self != nullptr) self->finishExportOnMessageThread (done, e); });
+    }).detach();
+}
+
+void GLCanvas::finishExportOnMessageThread (bool ok, const String& msg)
+{
+    for (auto& r : restoreValues) r.first->setValueNotifyingHost (r.second);
+    restoreValues.clear();
+    exportPhase = 0;
+    if (onExportFinished) onExportFinished (ok, ok ? exportOutputPath : msg);
 }
 
 //==============================================================================
@@ -434,6 +608,35 @@ PrismEditor::PrismEditor (PrismProcessor& p)
     addAndMakeVisible (autoButton);
     addChildComponent (autoPanel);
 
+    // preview resolution (lower = lighter on the GPU; export is unaffected)
+    const char* pvNames[] = { "Preview 100%", "Preview 75%", "Preview 50%", "Preview 35%", "Preview 25%" };
+    const float pvScales[] = { 1.0f, 0.75f, 0.5f, 0.35f, 0.25f };
+    for (int i = 0; i < 5; ++i) previewBox.addItem (pvNames[i], i + 1);
+    int pvSel = 1;
+    for (int i = 0; i < 5; ++i) if (std::abs (pvScales[i] - proc.previewScale.load()) < 0.02f) pvSel = i + 1;
+    previewBox.setSelectedId (pvSel, dontSendNotification);
+    previewBox.setTooltip ("Preview render resolution. Lower it to use less GPU. Exports are not affected.");
+    previewBox.onChange = [this, pvScales] { proc.previewScale = pvScales[jlimit (0, 4, previewBox.getSelectedId() - 1)]; };
+    addAndMakeVisible (previewBox);
+
+    exportButton.setColour (TextButton::buttonColourId, kAccent.withAlpha (0.16f));
+    exportButton.setColour (TextButton::textColourOffId, kAccent);
+    exportButton.onClick = [this] { onExportClicked(); };
+    addAndMakeVisible (exportButton);
+    canvas.onExportFinished = [this] (bool ok, String msg)
+    {
+        exportButton.setEnabled (true);
+        exportButton.setButtonText ("EXPORT VIDEO");
+        if (ok)
+        {
+            File (msg).revealToUser();
+            AlertWindow::showMessageBoxAsync (MessageBoxIconType::InfoIcon, "Export finished", "Saved: " + msg);
+        }
+        else
+            AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Export", msg);
+    };
+    startTimerHz (5);
+
     viewport.setViewedComponent (&panel, false);
     viewport.setScrollBarsShown (true, false);
     addAndMakeVisible (viewport);
@@ -454,10 +657,100 @@ void PrismEditor::resized()
     auto right = area.removeFromRight (344);
     if (autoPanel.isVisible()) autoPanel.setBounds (area.removeFromBottom (AutomationPanel::preferredHeight));
     canvas.setBounds (area);
-    auto header = right.removeFromTop (34).reduced (14, 6);
+    auto headArea = right.removeFromTop (68).reduced (14, 6);
+    auto header = headArea.removeFromTop (24);
     autoButton.setBounds (header.removeFromRight (110));
     title.setBounds (header);
+    headArea.removeFromTop (6);
+    exportButton.setBounds (headArea.removeFromRight (130));
+    headArea.removeFromRight (8);
+    previewBox.setBounds (headArea);
     viewport.setBounds (right);
     panel.setSize (right.getWidth() - viewport.getScrollBarThickness(), panel.getContentHeight());
     panel.resized();
+}
+
+//==============================================================================
+void PrismEditor::timerCallback()
+{
+    const int phase = canvas.getExportPhase();
+    if (phase == 1)
+        exportButton.setButtonText ("CANCEL " + String (roundToInt (canvas.getExportProgress() * 100.0f)) + "%");
+    else if (phase == 2)
+    {
+        exportButton.setButtonText ("FINISHING...");
+        exportButton.setEnabled (false);
+    }
+}
+
+void PrismEditor::onExportClicked()
+{
+    if (canvas.getExportPhase() == 1) { canvas.cancelExport(); return; }
+    if (canvas.getExportPhase() != 0) return;
+    if (! VideoSink::isAvailable())
+    {
+        AlertWindow::showMessageBoxAsync (MessageBoxIconType::InfoIcon, "Export",
+                                          "Video export is only available in the macOS version for now. Use the web version to export on other systems.");
+        return;
+    }
+    askExportOptions();
+}
+
+void PrismEditor::askExportOptions()
+{
+    auto* aw = new AlertWindow ("Export video",
+                                "The visuals are rendered offline, frame by frame, from an audio file you choose "
+                                "(WAV, AIFF, MP3, M4A, FLAC). Automation lanes are included. Your current look is used.",
+                                MessageBoxIconType::NoIcon, this);
+    aw->addComboBox ("res", { "1280 x 720", "1920 x 1080", "2560 x 1440", "3840 x 2160 (4K)" }, "Resolution");
+    aw->addComboBox ("fps", { "24", "30", "60" }, "Frame rate");
+    aw->addComboBox ("mbps", { "8 Mbps - good", "16 Mbps - high", "30 Mbps - very high", "60 Mbps - maximum" }, "Quality");
+    aw->getComboBoxComponent ("res")->setSelectedItemIndex (1);
+    aw->getComboBoxComponent ("fps")->setSelectedItemIndex (1);
+    aw->getComboBoxComponent ("mbps")->setSelectedItemIndex (1);
+    aw->addButton ("Choose audio...", 1, KeyPress (KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+    aw->enterModalState (true, ModalCallbackFunction::create ([this, aw] (int r)
+    {
+        if (r != 1) return;
+        const int sizes[][2] = { { 1280, 720 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 } };
+        const int fpss[] = { 24, 30, 60 };
+        const double rates[] = { 8.0, 16.0, 30.0, 60.0 };
+        const int ri = jlimit (0, 3, aw->getComboBoxComponent ("res")->getSelectedItemIndex());
+        exportSettings.width = sizes[ri][0]; exportSettings.height = sizes[ri][1];
+        exportSettings.fps = fpss[jlimit (0, 2, aw->getComboBoxComponent ("fps")->getSelectedItemIndex())];
+        exportSettings.mbps = rates[jlimit (0, 3, aw->getComboBoxComponent ("mbps")->getSelectedItemIndex())];
+        MessageManager::callAsync ([this] { chooseAudioThenOutput(); });
+    }), true);
+}
+
+void PrismEditor::chooseAudioThenOutput()
+{
+    chooser = std::make_unique<FileChooser> ("Choose the audio file to render", File::getSpecialLocation (File::userMusicDirectory),
+                                             "*.wav;*.aif;*.aiff;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.caf");
+    chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+    {
+        const auto audio = fc.getResult();
+        if (! audio.existsAsFile()) return;
+        exportSettings.audio = audio;
+        MessageManager::callAsync ([this, audio]
+        {
+            chooser = std::make_unique<FileChooser> ("Save the video as",
+                          File::getSpecialLocation (File::userMoviesDirectory).getChildFile (audio.getFileNameWithoutExtension() + " - prism.mp4"), "*.mp4");
+            chooser->launchAsync (FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles | FileBrowserComponent::warnAboutOverwriting,
+                                  [this] (const FileChooser& fc2)
+            {
+                auto out = fc2.getResult();
+                if (out == File()) return;
+                exportSettings.output = out.withFileExtension ("mp4");
+                String err;
+                if (! canvas.startExport (exportSettings, err))
+                {
+                    AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Export", err);
+                    return;
+                }
+                exportButton.setButtonText ("CANCEL 0%");
+            });
+        });
+    });
 }

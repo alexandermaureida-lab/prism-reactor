@@ -40,6 +40,15 @@ target_sources(PrismReactor PRIVATE
     Source/AutomationEngine.cpp
     Source/AutomationPanel.cpp)
 
+if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(PrismReactor PRIVATE Source/VideoExport.mm)
+    set_source_files_properties(Source/VideoExport.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(PrismReactor PRIVATE "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+else()
+    target_sources(PrismReactor PRIVATE Source/VideoExport.cpp)
+endif()
+
 target_compile_definitions(PrismReactor PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0

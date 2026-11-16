@@ -1,10 +1,12 @@
 #pragma once
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_opengl/juce_opengl.h>
 #include <list>
 #include <map>
 #include <string>
 #include "PluginProcessor.h"
 #include "AutomationPanel.h"
+#include "VideoExport.h"
 
 // Three-pass GLSL renderer: scene -> trails (ping-pong feedback) -> final grade.
 class GLCanvas : public juce::Component, private juce::OpenGLRenderer
@@ -13,7 +15,38 @@ public:
     explicit GLCanvas (PrismProcessor& p);
     ~GLCanvas() override;
 
+    // Offline video export: renders the visuals frame by frame from an audio file.
+    struct ExportSettings { int width = 1920, height = 1080, fps = 30; double mbps = 16.0; juce::File audio, output; };
+    bool startExport (const ExportSettings&, juce::String& error);   // message thread
+    void cancelExport() { exportCancel = true; }
+    int  getExportPhase() const { return exportPhase.load(); }        // 0 idle, 1 rendering, 2 finishing
+    float getExportProgress() const
+    {
+        const auto t = exportTotal.load();
+        return t > 0 ? (float) exportFrame.load() / (float) t : 0.0f;
+    }
+    std::function<void (bool ok, juce::String message)> onExportFinished;   // message thread
+
 private:
+    struct SnapLane { juce::RangedAudioParameter* param = nullptr; std::vector<AutoPoint> pts; bool discrete = false; };
+    struct ExportJob
+    {
+        ExportSettings s;
+        juce::AudioBuffer<float> mono;
+        double sampleRate = 44100.0, loopLen = 60.0;
+        juce::int64 total = 0, frame = 0, samplePos = 0;
+        Analyzer analyzer;
+        std::shared_ptr<VideoSink> sink;
+        std::vector<SnapLane> lanes;
+        juce::OpenGLFrameBuffer fbOut;
+        std::vector<juce::uint8> pixels;
+        juce::String error;
+        bool firstFrame = true;
+    };
+    void applyExportAutomation (const ExportJob&);
+    void endExportJob (bool cancelled);
+    void finishExportOnMessageThread (bool ok, const juce::String& msg);
+
     struct Pass
     {
         std::unique_ptr<juce::OpenGLShaderProgram> prog;
@@ -39,6 +72,14 @@ private:
     double lastTime = 0.0;
     float phase = 0.0f, spinAng = 0.0f, huePhase = 0.0f;
     std::array<float, Analyzer::numBars> bars {};
+
+    juce::CriticalSection jobLock;
+    std::unique_ptr<ExportJob> pendingJob, job;
+    std::atomic<bool> exportCancel { false };
+    std::atomic<int> exportPhase { 0 };
+    std::atomic<juce::int64> exportFrame { 0 }, exportTotal { 0 };
+    std::vector<std::pair<juce::RangedAudioParameter*, float>> restoreValues;
+    juce::String exportOutputPath;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GLCanvas)
 };
@@ -102,7 +143,7 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TunePanel)
 };
 
-class PrismEditor : public juce::AudioProcessorEditor
+class PrismEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
     explicit PrismEditor (PrismProcessor&);
@@ -112,8 +153,16 @@ public:
     void resized() override;
 
 private:
+    void timerCallback() override;
+    void onExportClicked();
+    void askExportOptions();
+    void chooseAudioThenOutput();
     PrismProcessor& proc;
     GLCanvas canvas;
+    juce::ComboBox previewBox;
+    juce::TextButton exportButton { "EXPORT VIDEO" };
+    GLCanvas::ExportSettings exportSettings;
+    std::unique_ptr<juce::FileChooser> chooser;
     TunePanel panel;
     juce::Viewport viewport;
     juce::Label title;

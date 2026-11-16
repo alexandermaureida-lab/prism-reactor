@@ -85,3 +85,7 @@ shaders/                 GLSL compartido por plugin y web
 
 ## Automation in the Standalone / plugin editor
 Press **AUTOMATION** (top right) to open the timeline strip: PLAY, ● REC (move any control while playing to record a lane), click on a lane to add points, drag to move, double‑click / right‑click to delete, M = mute lane, SAVE/LOAD JSON. Lanes are stored with the plugin state. The clock is an internal loop (not host‑synced); in Live, map parameters to macros for timeline automation.
+
+## Preview resolution & video export in the Standalone / plugin (macOS)
+- **Preview NN%** (top right, all versions): renders the on‑screen preview at a lower resolution to use less GPU (100/75/50/35/25 %). It does not change exports. Saved with the state (web: in the browser).
+- **EXPORT VIDEO** (Standalone/plugin, macOS): renders the visuals *offline* frame by frame from an audio file you pick (WAV/AIFF/MP3/M4A/FLAC) to an H.264 + AAC MP4 (720p–4K, 24/30/60 fps, 8–60 Mbps) using AVFoundation. Automation lanes are baked in (from t = 0). The live audio input is not used for export.

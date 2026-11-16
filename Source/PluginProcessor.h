@@ -39,6 +39,7 @@ public:
     juce::AudioProcessorValueTreeState apvts;
     AutomationEngine automation { apvts };
     Analyzer analyzer;
+    std::atomic<float> previewScale { 1.0f };   // render scale of the on-screen preview (editor setting, saved in state)
 
 private:
     std::atomic<float>* gainParam = nullptr;
