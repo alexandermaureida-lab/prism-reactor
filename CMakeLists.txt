@@ -38,7 +38,8 @@ target_sources(PrismReactor PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/AutomationEngine.cpp
-    Source/AutomationPanel.cpp)
+    Source/AutomationPanel.cpp
+    Source/TransportBar.cpp)
 
 if(APPLE)
     enable_language(OBJCXX)

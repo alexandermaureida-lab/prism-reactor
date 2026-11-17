@@ -13,7 +13,7 @@ public:
     ~AutomationPanel() override;
     void paint (juce::Graphics&) override;
     void resized() override;
-    static constexpr int preferredHeight = 250;
+    static constexpr int preferredHeight = 282;
 
 private:
     class Ruler;
@@ -26,7 +26,8 @@ private:
 
     AutomationEngine& engine;
     juce::TextButton playButton { "PLAY" }, recButton { "REC" }, saveButton { "SAVE" }, loadButton { "LOAD" }, clearButton { "CLEAR" };
-    juce::ComboBox loopBox, addBox;
+    juce::ComboBox loopBox, addBox, syncBox;
+    juce::Label bpmLabel, bpmCaption;
     juce::Label timeLabel;
     std::unique_ptr<Ruler> ruler;
     juce::Viewport viewport;

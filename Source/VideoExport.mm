@@ -26,26 +26,29 @@ class MacVideoSink : public VideoSink
 public:
     ~MacVideoSink() override { abort(); }
 
-    bool begin (const juce::File& out, int w, int h, int f, double mbps, const juce::File& audio, juce::String& err) override
+    bool begin (const juce::File& out, int w, int h, int f, double mbps, const juce::File& audio, int codec, juce::String& err) override
     {
         @autoreleasepool
         {
-            outFile = out; audioFile = audio; fps = f; srcWidth = w; srcHeight = h;
+            outFile = out; audioFile = audio; fps = f; isMov = (codec == 2); srcWidth = w; srcHeight = h;
             width = (w + 1) & ~1; height = (h + 1) & ~1;
-            tmpVideo = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("prism-video", ".mp4", false);
+            tmpVideo = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("prism-video", codec == 2 ? ".mov" : ".mp4", false);
             tmpAudio = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("prism-audio", ".m4a", false);
             tmpVideo.deleteFile();
 
             NSError* e = nil;
             writer = [[AVAssetWriter alloc] initWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:tmpVideo.getFullPathName().toRawUTF8()]]
-                                               fileType:AVFileTypeMPEG4 error:&e];
+                                               fileType:(isMov ? AVFileTypeQuickTimeMovie : AVFileTypeMPEG4) error:&e];
             if (writer == nil) { err = "Cannot create video file"; return false; }
 
-            NSDictionary* settings = @{ AVVideoCodecKey: AVVideoCodecTypeH264,
-                                        AVVideoWidthKey: @(width), AVVideoHeightKey: @(height),
-                                        AVVideoCompressionPropertiesKey: @{ AVVideoAverageBitRateKey: @((int) (mbps * 1.0e6)),
-                                                                            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                                                                            AVVideoExpectedSourceFrameRateKey: @(fps) } };
+            NSDictionary* settings;
+            if (codec == 2)
+                settings = @{ AVVideoCodecKey: AVVideoCodecTypeAppleProRes422, AVVideoWidthKey: @(width), AVVideoHeightKey: @(height) };
+            else
+                settings = @{ AVVideoCodecKey: (codec == 1 ? AVVideoCodecTypeHEVC : AVVideoCodecTypeH264),
+                              AVVideoWidthKey: @(width), AVVideoHeightKey: @(height),
+                              AVVideoCompressionPropertiesKey: @{ AVVideoAverageBitRateKey: @((int) (mbps * 1.0e6)),
+                                                                  AVVideoExpectedSourceFrameRateKey: @(fps) } };
             input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
             input.expectsMediaDataInRealTime = NO;
             NSDictionary* attrs = @{ (__bridge id) kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
@@ -153,7 +156,7 @@ public:
             }
             AVAssetExportSession* ev = [[AVAssetExportSession alloc] initWithAsset:comp presetName:AVAssetExportPresetPassthrough];
             ev.outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:outFile.getFullPathName().toRawUTF8()]];
-            ev.outputFileType = AVFileTypeMPEG4;
+            ev.outputFileType = isMov ? AVFileTypeQuickTimeMovie : AVFileTypeMPEG4;
             ev.shouldOptimizeForNetworkUse = YES;
             const bool ok = waitExport (ev, err);
             if (! ok) err = "Mux failed: " + err;
@@ -177,6 +180,7 @@ private:
     AVAssetWriterInput* input = nil;
     AVAssetWriterInputPixelBufferAdaptor* adaptor = nil;
     int width = 0, height = 0, fps = 30;
+    bool isMov = false;
     juce::int64 frames = 0;
     bool started = false;
 };

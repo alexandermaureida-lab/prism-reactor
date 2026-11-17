@@ -69,7 +69,49 @@ void GLCanvas::newOpenGLContextCreated()
     glBufferData (GL_ARRAY_BUFFER, sizeof (verts), verts, GL_STATIC_DRAW);
     glBindBuffer (GL_ARRAY_BUFFER, 0);
 
+    glGenTextures (1, &dummyTex);
+    glBindTexture (GL_TEXTURE_2D, dummyTex);
+    const GLubyte black[4] = { 0, 0, 0, 255 };
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, black);
+    glBindTexture (GL_TEXTURE_2D, 0);
+    mediaSeen = -1; hasMedia = false;
+
     lastTime = Time::getMillisecondCounterHiRes() * 0.001;
+}
+
+void GLCanvas::updateMediaTexture()
+{
+    using namespace juce::gl;
+    const int ver = proc.getMediaVersion();
+    if (ver == mediaSeen) return;
+    mediaSeen = ver;
+    auto img = proc.getMediaImage();
+    if (! img.isValid()) { hasMedia = false; return; }
+
+    const int iw = img.getWidth(), ih = img.getHeight();
+    std::vector<GLubyte> px ((size_t) iw * (size_t) ih * 4);
+    Image::BitmapData bd (img, Image::BitmapData::readOnly);
+    for (int y = 0; y < ih; ++y)
+    {
+        const auto* src = bd.getLinePointer (y);
+        auto* dst = px.data() + (size_t) y * (size_t) iw * 4;
+        for (int x = 0; x < iw; ++x)
+        {
+            const auto* q = src + x * bd.pixelStride;   // ARGB, little endian: B G R A
+            dst[x * 4 + 0] = q[2]; dst[x * 4 + 1] = q[1]; dst[x * 4 + 2] = q[0]; dst[x * 4 + 3] = 255;
+        }
+    }
+    if (mediaTex == 0) glGenTextures (1, &mediaTex);
+    glBindTexture (GL_TEXTURE_2D, mediaTex);
+    glPixelStorei (GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, iw, ih, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture (GL_TEXTURE_2D, 0);
+    mediaAspect = (float) iw / (float) ih;
+    hasMedia = true;
 }
 
 void GLCanvas::openGLContextClosing()
@@ -80,6 +122,9 @@ void GLCanvas::openGLContextClosing()
     if (job != nullptr) { job->fbOut.release(); job->sink->abort(); job.reset(); exportPhase = 0; }
     if (pendingJob != nullptr) { pendingJob->sink->abort(); pendingJob.reset(); exportPhase = 0; }
     if (vbo != 0) { glDeleteBuffers (1, &vbo); vbo = 0; }
+    if (mediaTex != 0) { glDeleteTextures (1, &mediaTex); mediaTex = 0; }
+    if (dummyTex != 0) { glDeleteTextures (1, &dummyTex); dummyTex = 0; }
+    mediaSeen = -1; hasMedia = false;
 }
 
 void GLCanvas::ensureTargets (int w, int h)
@@ -145,7 +190,8 @@ void GLCanvas::renderOpenGL()
     if (exporting) { w = job->s.width; h = job->s.height; }
     else
     {
-        const float ps = jlimit (0.2f, 1.0f, proc.previewScale.load());
+        float ps = proc.previewScale.load();
+        if (ps < 0.0f) ps = autoScale; else { ps = jlimit (0.2f, 1.0f, ps); autoScale = ps; }
         w = jmax (2, roundToInt ((float) physW * ps));
         h = jmax (2, roundToInt ((float) physH * ps));
     }
@@ -160,7 +206,17 @@ void GLCanvas::renderOpenGL()
 
     const double now = Time::getMillisecondCounterHiRes() * 0.001;
     float dt = (float) jlimit (0.0, 0.1, now - lastTime);
-    lastTime = now;
+    {
+        const float raw = (float) (now - lastTime);
+        lastTime = now;
+        // automatic preview quality: drop resolution when frames get slow, creep back up when there is headroom
+        if (! exporting && proc.previewScale.load() < 0.0f && raw > 0.0f && raw < 1.0f)
+        {
+            frameEma += (raw - frameEma) * 0.08f;
+            if (frameEma > 0.026f && now - lastScaleChange > 0.6) { autoScale = jmax (0.3f, autoScale - 0.1f); lastScaleChange = now; frameEma = 0.0166f; }
+            else if (frameEma < 0.0185f && autoScale < 1.0f && now - lastScaleChange > 4.0) { autoScale = jmin (1.0f, autoScale + 0.05f); lastScaleChange = now; }
+        }
+    }
     float clock = (float) std::fmod (now, 1000.0);
 
     const Analyzer* anPtr = &proc.analyzer;
@@ -199,6 +255,8 @@ void GLCanvas::renderOpenGL()
     phase += dt * speedMul * (0.5f + level * react * 1.5f);
     spinAng += dt * (P ("spin") / 100.0f) * 1.2f;
     huePhase += dt * (P ("hueDrift") / 100.0f) * 0.06f;
+    mxSpinAng += dt * (P ("mxSpin") / 100.0f) * 1.5f;
+    updateMediaTexture();
 
     const int pal = jlimit (0, (int) std::size (kPalettes) - 1, (int) P ("palette"));
     const auto& pl = kPalettes[pal];
@@ -232,6 +290,21 @@ void GLCanvas::renderOpenGL()
         if (const int l = S.loc ("uPalB"); l >= 0) glUniform3fv ((GLint) l, 1, pl.b);
         if (const int l = S.loc ("uPalC"); l >= 0) glUniform3fv ((GLint) l, 1, pl.c);
         if (const int l = S.loc ("uPalD"); l >= 0) glUniform3fv ((GLint) l, 1, pl.d);
+        glActiveTexture (GL_TEXTURE2); glBindTexture (GL_TEXTURE_2D, hasMedia ? mediaTex : dummyTex);
+        glActiveTexture (GL_TEXTURE0);
+        i1 (S, "uMedia", 2);
+        f1 (S, "uHasMedia", hasMedia ? 1.0f : 0.0f); f1 (S, "uMediaAspect", mediaAspect);
+        f1 (S, "uMxScene", P ("mxScene") / 100.0f); f1 (S, "uMxOpacity", P ("mxOpacity") / 100.0f); f1 (S, "uMxGlobal", P ("mxGlobal") / 100.0f);
+        f1 (S, "uMxZoom", P ("mxZoom") / 100.0f); f1 (S, "uMxRot", P ("mxRot") / 100.0f * MathConstants<float>::pi + mxSpinAng);
+        f1 (S, "uMxMirror", P ("mxMirror")); f1 (S, "uMxTiles", P ("mxTiles"));
+        f1 (S, "uMxSlice", P ("mxSlice") / 100.0f); f1 (S, "uMxShatter", P ("mxShatter") / 100.0f);
+        f1 (S, "uMxPixel", P ("mxPixel") / 100.0f); f1 (S, "uMxDots", P ("mxDots") / 100.0f);
+        f1 (S, "uMxSplit", P ("mxSplit") / 100.0f); f1 (S, "uMxWave", P ("mxWave") / 100.0f); f1 (S, "uMxTwist", P ("mxTwist") / 100.0f);
+        f1 (S, "uMxPoster", P ("mxPoster") / 100.0f); f1 (S, "uMxEdge", P ("mxEdge") / 100.0f); f1 (S, "uMxTint", P ("mxTint") / 100.0f);
+        f1 (S, "uMxBright", P ("mxBright") / 100.0f); f1 (S, "uMxContrast", P ("mxContrast") / 100.0f);
+        f1 (S, "uMxInvert", P ("mxInvert")); f1 (S, "uMxReact", P ("mxReact") / 100.0f * 1.6f);
+        f1 (S, "uMxClip", P ("mxEdges"));
+        i1 (S, "uMxFit", (int) P ("mxFit")); i1 (S, "uMxDrive", (int) P ("mxDrive")); i1 (S, "uMxBlend", (int) P ("mxBlend"));
         drawQuad (S);
     }
     fbScene.releaseAsRenderingTarget();
@@ -329,7 +402,7 @@ bool GLCanvas::startExport (const ExportSettings& s, String& error)
 
     j->sink = VideoSink::create();
     if (j->sink == nullptr) { error = "Video export is not available on this system"; return false; }
-    if (! j->sink->begin (s.output, j->s.width, j->s.height, s.fps, s.mbps, s.audio, error)) return false;
+    if (! j->sink->begin (s.output, j->s.width, j->s.height, s.fps, s.mbps, s.audio, s.codec, error)) return false;
 
     // freeze the automation lanes: the export follows them from t = 0
     auto& eng = proc.automation;
@@ -515,6 +588,67 @@ TunePanel::TunePanel (PrismProcessor& p) : proc (p), eqCurve (p)
     addCombo ("shape", "shape");
     addCombo ("material", "material");
 
+    // ---- image layer
+    struct MediaRow : Component
+    {
+        MediaRow (PrismProcessor& pr) : proc (pr)
+        {
+            load.setButtonText ("LOAD IMAGE"); clear.setButtonText ("CLEAR");
+            for (auto* b : { &load, &clear })
+            {
+                b->setColour (TextButton::buttonColourId, Colours::white.withAlpha (0.05f));
+                b->setColour (TextButton::textColourOffId, kAccent);
+                addAndMakeVisible (b);
+            }
+            name.setColour (Label::textColourId, Colours::white.withAlpha (0.5f));
+            name.setFont (Font (FontOptions (11.0f)));
+            addAndMakeVisible (name);
+            load.onClick = [this]
+            {
+                chooser = std::make_unique<FileChooser> ("Choose an image", File::getSpecialLocation (File::userPicturesDirectory), "*.png;*.jpg;*.jpeg;*.gif");
+                chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+                {
+                    const auto f = fc.getResult();
+                    if (f.existsAsFile() && ! proc.setMediaFile (f))
+                        AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Image", "That image could not be read (PNG, JPG or GIF).");
+                    refresh();
+                });
+            };
+            clear.onClick = [this] { proc.clearMedia(); refresh(); };
+            refresh();
+        }
+        void refresh()
+        {
+            name.setText (proc.getMediaFile().existsAsFile() ? proc.getMediaFile().getFileName() : "no image loaded (image + video: web version)", dontSendNotification);
+        }
+        void resized() override
+        {
+            auto a = getLocalBounds();
+            auto top = a.removeFromTop (26);
+            load.setBounds (top.removeFromLeft (110)); top.removeFromLeft (6);
+            clear.setBounds (top.removeFromLeft (70));
+            name.setBounds (a);
+        }
+        PrismProcessor& proc;
+        TextButton load, clear;
+        Label name;
+        std::unique_ptr<FileChooser> chooser;
+    };
+    sectionHeader ("image");
+    mediaRow = std::make_unique<MediaRow> (proc);
+    addAndMakeVisible (*mediaRow);
+    items.push_back ({ mediaRow.get(), nullptr, 52, true });
+    for (auto* id : { "mxOpacity", "mxScene", "mxGlobal" }) addSlider (id);
+    addCombo ("mxBlend", "blend"); addCombo ("mxFit", "fit"); addCombo ("mxEdges", "edges");
+    sectionHeader ("image · move");
+    for (auto* id : { "mxZoom", "mxRot", "mxSpin", "mxTwist", "mxMirror", "mxTiles" }) addSlider (id);
+    sectionHeader ("image · decompose");
+    for (auto* id : { "mxSlice", "mxShatter", "mxPixel", "mxDots", "mxWave", "mxSplit" }) addSlider (id);
+    sectionHeader ("image · tone");
+    for (auto* id : { "mxEdge", "mxPoster", "mxTint", "mxBright", "mxContrast", "mxInvert" }) addSlider (id);
+    sectionHeader ("image · audio drive");
+    addCombo ("mxDrive", "driven by"); addSlider ("mxReact");
+
     if (lensStyleRow != nullptr)
     {
         auto upd = [this]
@@ -533,7 +667,7 @@ void TunePanel::addSlider (const char* id)
 {
     const auto& d = findParam (id);
     auto& r = rows.emplace_back();
-    r.label.setText (d.label, dontSendNotification);
+    r.label.setText (String (d.label).replace ("image ", ""), dontSendNotification);
     r.label.setColour (Label::textColourId, Colours::white.withAlpha (0.55f));
     r.slider.setName (id);
     r.slider.setSliderStyle (Slider::LinearHorizontal);
@@ -591,49 +725,111 @@ void TunePanel::resized()
 }
 
 //==============================================================================
+// Borderless window that shows only the visuals (second screen / projector). Esc or F closes it.
+class FullscreenWindow : public DocumentWindow
+{
+public:
+    FullscreenWindow (PrismProcessor& p, std::function<void()> onClose)
+        : DocumentWindow ("Prism Reactor", Colours::black, DocumentWindow::closeButton | DocumentWindow::maximiseButton), closeCb (std::move (onClose))
+    {
+        setUsingNativeTitleBar (true);
+        setContentOwned (new GLCanvas (p), false);
+        setResizable (true, false);
+        centreWithSize (1280, 720);
+        setVisible (true);
+        setWantsKeyboardFocus (true);
+        grabKeyboardFocus();
+        setFullScreen (true);
+    }
+    void closeButtonPressed() override { if (closeCb) closeCb(); }
+    bool keyPressed (const KeyPress& k) override
+    {
+        if (k == KeyPress::escapeKey || k.getTextCharacter() == 'f' || k.getTextCharacter() == 'F') { if (closeCb) closeCb(); return true; }
+        return false;
+    }
+private:
+    std::function<void()> closeCb;
+};
+
+//==============================================================================
 PrismEditor::PrismEditor (PrismProcessor& p)
-    : AudioProcessorEditor (&p), proc (p), canvas (p), panel (p), autoPanel (p.automation)
+    : AudioProcessorEditor (&p), proc (p), canvas (p), transportBar (p), panel (p), autoPanel (p.automation)
 {
     addAndMakeVisible (canvas);
+    addAndMakeVisible (transportBar);
+    transportBar.onRecordingStopped = [this] { askExportOptions (true); };
 
-    title.setText ("tune", dontSendNotification);
-    title.setColour (Label::textColourId, Colours::white);
-    addAndMakeVisible (title);
+    auto styleBtn = [] (TextButton& b, bool accent)
+    {
+        b.setColour (TextButton::buttonColourId, accent ? kAccent.withAlpha (0.16f) : Colours::white.withAlpha (0.05f));
+        b.setColour (TextButton::textColourOffId, accent ? kAccent : Colours::white.withAlpha (0.85f));
+    };
+
+    // presets (also exposed to the host as programs)
+    for (int i = 0; i < PrismProcessor::numFactoryPresets(); ++i) presetBox.addItem (PrismProcessor::factoryPresetName (i), i + 1);
+    presetBox.setTextWhenNothingSelected ("Presets");
+    presetBox.onChange = [this] { proc.setCurrentProgram (presetBox.getSelectedId() - 1); };
+    addAndMakeVisible (presetBox);
+    styleBtn (presetSave, false); styleBtn (presetLoad, false);
+    presetSave.onClick = [this]
+    {
+        chooser = std::make_unique<FileChooser> ("Save preset", File::getSpecialLocation (File::userDocumentsDirectory).getChildFile ("my-look.prism"), "*.prism");
+        chooser->launchAsync (FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles | FileBrowserComponent::warnAboutOverwriting,
+                              [this] (const FileChooser& fc) { if (fc.getResult() != File()) proc.savePresetFile (fc.getResult()); });
+    };
+    presetLoad.onClick = [this]
+    {
+        chooser = std::make_unique<FileChooser> ("Load preset", File::getSpecialLocation (File::userDocumentsDirectory), "*.prism");
+        chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
+        {
+            if (fc.getResult().existsAsFile() && ! proc.loadPresetFile (fc.getResult()))
+                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Preset", "That file is not a Prism Reactor preset.");
+        });
+    };
+    addAndMakeVisible (presetSave); addAndMakeVisible (presetLoad);
+
+    // preview resolution (lower = lighter on the GPU; export is unaffected)
+    const char* pvNames[] = { "Preview 100%", "Preview 75%", "Preview 50%", "Preview 35%", "Preview 25%", "Preview auto" };
+    const float pvScales[] = { 1.0f, 0.75f, 0.5f, 0.35f, 0.25f, -1.0f };
+    for (int i = 0; i < 6; ++i) previewBox.addItem (pvNames[i], i + 1);
+    int pvSel = 1;
+    for (int i = 0; i < 6; ++i) if (std::abs (pvScales[i] - proc.previewScale.load()) < 0.02f) pvSel = i + 1;
+    previewBox.setSelectedId (pvSel, dontSendNotification);
+    previewBox.setTooltip ("Preview render resolution. Lower it (or use auto) to spend less GPU. Exports are not affected.");
+    previewBox.onChange = [this, pvScales] { proc.previewScale = pvScales[jlimit (0, 5, previewBox.getSelectedId() - 1)]; };
+    addAndMakeVisible (previewBox);
 
     autoButton.setClickingTogglesState (true);
-    autoButton.setColour (TextButton::buttonColourId, Colours::white.withAlpha (0.05f));
+    styleBtn (autoButton, false);
     autoButton.setColour (TextButton::buttonOnColourId, kAccent.withAlpha (0.3f));
-    autoButton.setColour (TextButton::textColourOffId, Colours::white.withAlpha (0.85f));
     autoButton.onClick = [this] { autoPanel.setVisible (autoButton.getToggleState()); resized(); };
     addAndMakeVisible (autoButton);
     addChildComponent (autoPanel);
 
-    // preview resolution (lower = lighter on the GPU; export is unaffected)
-    const char* pvNames[] = { "Preview 100%", "Preview 75%", "Preview 50%", "Preview 35%", "Preview 25%" };
-    const float pvScales[] = { 1.0f, 0.75f, 0.5f, 0.35f, 0.25f };
-    for (int i = 0; i < 5; ++i) previewBox.addItem (pvNames[i], i + 1);
-    int pvSel = 1;
-    for (int i = 0; i < 5; ++i) if (std::abs (pvScales[i] - proc.previewScale.load()) < 0.02f) pvSel = i + 1;
-    previewBox.setSelectedId (pvSel, dontSendNotification);
-    previewBox.setTooltip ("Preview render resolution. Lower it to use less GPU. Exports are not affected.");
-    previewBox.onChange = [this, pvScales] { proc.previewScale = pvScales[jlimit (0, 4, previewBox.getSelectedId() - 1)]; };
-    addAndMakeVisible (previewBox);
+    styleBtn (exportButton, true); styleBtn (fullButton, false); styleBtn (cancelButton, false);
+    exportButton.onClick = [this]
+    {
+        if (! VideoSink::isAvailable())
+        {
+            AlertWindow::showMessageBoxAsync (MessageBoxIconType::InfoIcon, "Export",
+                                              "Video export is only available in the macOS version for now. Use the web version to export on other systems.");
+            return;
+        }
+        askExportOptions();
+    };
+    fullButton.onClick = [this] { toggleFullscreen(); };
+    cancelButton.onClick = [this] { exportQueue.clear(); canvas.cancelExport(); };
+    addAndMakeVisible (exportButton); addAndMakeVisible (fullButton);
+    addChildComponent (cancelButton);
+    statusLabel.setColour (Label::textColourId, kAccent);
+    statusLabel.setFont (Font (FontOptions (12.0f)));
+    addAndMakeVisible (statusLabel);
 
-    exportButton.setColour (TextButton::buttonColourId, kAccent.withAlpha (0.16f));
-    exportButton.setColour (TextButton::textColourOffId, kAccent);
-    exportButton.onClick = [this] { onExportClicked(); };
-    addAndMakeVisible (exportButton);
     canvas.onExportFinished = [this] (bool ok, String msg)
     {
-        exportButton.setEnabled (true);
-        exportButton.setButtonText ("EXPORT VIDEO");
-        if (ok)
-        {
-            File (msg).revealToUser();
-            AlertWindow::showMessageBoxAsync (MessageBoxIconType::InfoIcon, "Export finished", "Saved: " + msg);
-        }
-        else
-            AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Export", msg);
+        exportReport.add ((ok ? "Saved: " : "Failed: ") + msg);
+        if (msg == "Export cancelled") exportQueue.clear();
+        startNextExport();
     };
     startTimerHz (5);
 
@@ -641,9 +837,16 @@ PrismEditor::PrismEditor (PrismProcessor& p)
     viewport.setScrollBarsShown (true, false);
     addAndMakeVisible (viewport);
 
+    setWantsKeyboardFocus (true);
     setResizable (true, true);
-    setResizeLimits (760, 460, 2200, 1400);
-    setSize (1180, 700);
+    setResizeLimits (860, 520, 2400, 1500);
+    setSize (1180, 760);
+}
+
+PrismEditor::~PrismEditor()
+{
+    fullscreen.reset();
+    canvas.onExportFinished = nullptr;
 }
 
 void PrismEditor::paint (Graphics& g)
@@ -651,106 +854,180 @@ void PrismEditor::paint (Graphics& g)
     g.fillAll (kPanel);
 }
 
+void PrismEditor::setPanelVisible (bool v)
+{
+    panelVisible = v;
+    for (auto* c : std::initializer_list<Component*> { &presetBox, &presetSave, &presetLoad, &previewBox, &autoButton, &exportButton, &fullButton, &statusLabel, &viewport })
+        c->setVisible (v);
+    resized();
+}
+
 void PrismEditor::resized()
 {
     auto area = getLocalBounds();
-    auto right = area.removeFromRight (344);
+    auto right = panelVisible ? area.removeFromRight (344) : Rectangle<int>();
     if (autoPanel.isVisible()) autoPanel.setBounds (area.removeFromBottom (AutomationPanel::preferredHeight));
+    transportBar.setBounds (area.removeFromBottom (TransportBar::preferredHeight));
     canvas.setBounds (area);
-    auto headArea = right.removeFromTop (68).reduced (14, 6);
-    auto header = headArea.removeFromTop (24);
-    autoButton.setBounds (header.removeFromRight (110));
-    title.setBounds (header);
-    headArea.removeFromTop (6);
-    exportButton.setBounds (headArea.removeFromRight (130));
-    headArea.removeFromRight (8);
-    previewBox.setBounds (headArea);
+    if (! panelVisible) return;
+
+    auto head = right.removeFromTop (126).reduced (14, 8);
+    auto r1 = head.removeFromTop (26); head.removeFromTop (5);
+    presetLoad.setBounds (r1.removeFromRight (52)); r1.removeFromRight (4);
+    presetSave.setBounds (r1.removeFromRight (52)); r1.removeFromRight (6);
+    presetBox.setBounds (r1);
+    auto r2 = head.removeFromTop (26); head.removeFromTop (5);
+    autoButton.setBounds (r2.removeFromRight (110)); r2.removeFromRight (6);
+    previewBox.setBounds (r2);
+    auto r3 = head.removeFromTop (26); head.removeFromTop (5);
+    fullButton.setBounds (r3.removeFromRight (110)); r3.removeFromRight (6);
+    exportButton.setBounds (r3);
+    auto r4 = head.removeFromTop (24);
+    cancelButton.setBounds (r4.removeFromRight (70)); r4.removeFromRight (6);
+    statusLabel.setBounds (r4);
     viewport.setBounds (right);
     panel.setSize (right.getWidth() - viewport.getScrollBarThickness(), panel.getContentHeight());
     panel.resized();
+}
+
+bool PrismEditor::keyPressed (const KeyPress& k)
+{
+    const auto c = (juce_wchar) CharacterFunctions::toLowerCase (k.getTextCharacter());
+    if (k.getModifiers().isCommandDown() || k.getModifiers().isCtrlDown()) return false;
+    if (c == 'h') { setPanelVisible (! panelVisible); return true; }
+    if (c == 'a') { autoButton.setToggleState (! autoButton.getToggleState(), sendNotification); return true; }
+    if (c == 'f') { toggleFullscreen(); return true; }
+    if (c == ' ') { transportBar.togglePlay(); return true; }
+    if (c == 'r') { PrismProcessor::randomizeLook (proc.apvts); return true; }
+    if (c >= '1' && c <= '8')
+    {
+        if (auto* prm = proc.apvts.getParameter ("scene"))
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) (c - '1')));
+            prm->endChangeGesture();
+        }
+        return true;
+    }
+    return false;
+}
+
+void PrismEditor::toggleFullscreen()
+{
+    if (fullscreen != nullptr) { fullscreen.reset(); return; }
+    fullscreen = std::make_unique<FullscreenWindow> (proc, [this] { MessageManager::callAsync ([safe = SafePointer<PrismEditor> (this)] { if (safe != nullptr) safe->fullscreen.reset(); }); });
 }
 
 //==============================================================================
 void PrismEditor::timerCallback()
 {
     const int phase = canvas.getExportPhase();
+    const bool busy = phase != 0 || ! exportQueue.empty();
+    exportButton.setButtonText (busy ? "ADD TO QUEUE" : "EXPORT VIDEO");
+    cancelButton.setVisible (panelVisible && busy);
     if (phase == 1)
-        exportButton.setButtonText ("CANCEL " + String (roundToInt (canvas.getExportProgress() * 100.0f)) + "%");
-    else if (phase == 2)
     {
-        exportButton.setButtonText ("FINISHING...");
-        exportButton.setEnabled (false);
+        const float prog = canvas.getExportProgress();
+        const double el = (double) (Time::currentTimeMillis() - exportStartMs) / 1000.0;
+        String t = "Rendering " + String (roundToInt (prog * 100.0f)) + "%";
+        if (prog > 0.02f)
+        {
+            const int eta = (int) (el * (1.0 - prog) / prog);
+            t << "  ·  " << String (eta / 60) << ":" << String (eta % 60).paddedLeft ('0', 2) << " left";
+        }
+        if (! exportQueue.empty()) t << "  ·  +" << String ((int) exportQueue.size()) << " queued";
+        statusLabel.setText (t, dontSendNotification);
     }
+    else if (phase == 2) statusLabel.setText ("Finishing file...", dontSendNotification);
+    else statusLabel.setText (busy ? "Starting next export..." : "", dontSendNotification);
 }
 
-void PrismEditor::onExportClicked()
-{
-    if (canvas.getExportPhase() == 1) { canvas.cancelExport(); return; }
-    if (canvas.getExportPhase() != 0) return;
-    if (! VideoSink::isAvailable())
-    {
-        AlertWindow::showMessageBoxAsync (MessageBoxIconType::InfoIcon, "Export",
-                                          "Video export is only available in the macOS version for now. Use the web version to export on other systems.");
-        return;
-    }
-    askExportOptions();
-}
-
-void PrismEditor::askExportOptions()
+void PrismEditor::askExportOptions (bool preferRecording)
 {
     auto* aw = new AlertWindow ("Export video",
-                                "The visuals are rendered offline, frame by frame, from an audio file you choose "
-                                "(WAV, AIFF, MP3, M4A, FLAC). Automation lanes are included. Your current look is used.",
+                                "The visuals are rendered offline, frame by frame, from audio. Your current look and the "
+                                "automation lanes are used. If an export is running this one joins the queue.",
                                 MessageBoxIconType::NoIcon, this);
     aw->addComboBox ("res", { "1280 x 720", "1920 x 1080", "2560 x 1440", "3840 x 2160 (4K)" }, "Resolution");
     aw->addComboBox ("fps", { "24", "30", "60" }, "Frame rate");
-    aw->addComboBox ("mbps", { "8 Mbps - good", "16 Mbps - high", "30 Mbps - very high", "60 Mbps - maximum" }, "Quality");
+    aw->addComboBox ("codec", { "H.264 (MP4)", "H.265 / HEVC (MP4)", "ProRes 422 (MOV)" }, "Format");
+    aw->addComboBox ("mbps", { "8 Mbps - good", "16 Mbps - high", "30 Mbps - very high", "60 Mbps - maximum" }, "Quality (not used by ProRes)");
+    StringArray sources;
+    auto kinds = std::make_shared<std::vector<int>>();
+    sources.add ("Choose a file..."); kinds->push_back (0);
+    if (proc.hasAudioFile()) { sources.add ("Player: " + proc.getLoadedAudioFile().getFileName()); kinds->push_back (1); }
+    if (proc.getLastRecording().existsAsFile()) { sources.add ("Last live recording"); kinds->push_back (2); }
+    aw->addComboBox ("src", sources, "Audio");
     aw->getComboBoxComponent ("res")->setSelectedItemIndex (1);
     aw->getComboBoxComponent ("fps")->setSelectedItemIndex (1);
+    aw->getComboBoxComponent ("codec")->setSelectedItemIndex (0);
     aw->getComboBoxComponent ("mbps")->setSelectedItemIndex (1);
-    aw->addButton ("Choose audio...", 1, KeyPress (KeyPress::returnKey));
+    int srcSel = 0;
+    for (size_t i = 0; i < kinds->size(); ++i) if (preferRecording && (*kinds)[i] == 2) srcSel = (int) i;
+    aw->getComboBoxComponent ("src")->setSelectedItemIndex (srcSel);
+    aw->addButton ("Next...", 1, KeyPress (KeyPress::returnKey));
     aw->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
-    aw->enterModalState (true, ModalCallbackFunction::create ([this, aw] (int r)
+    aw->enterModalState (true, ModalCallbackFunction::create ([this, aw, kinds] (int r)
     {
         if (r != 1) return;
         const int sizes[][2] = { { 1280, 720 }, { 1920, 1080 }, { 2560, 1440 }, { 3840, 2160 } };
         const int fpss[] = { 24, 30, 60 };
         const double rates[] = { 8.0, 16.0, 30.0, 60.0 };
         const int ri = jlimit (0, 3, aw->getComboBoxComponent ("res")->getSelectedItemIndex());
+        exportSettings = {};
         exportSettings.width = sizes[ri][0]; exportSettings.height = sizes[ri][1];
         exportSettings.fps = fpss[jlimit (0, 2, aw->getComboBoxComponent ("fps")->getSelectedItemIndex())];
+        exportSettings.codec = jlimit (0, 2, aw->getComboBoxComponent ("codec")->getSelectedItemIndex());
         exportSettings.mbps = rates[jlimit (0, 3, aw->getComboBoxComponent ("mbps")->getSelectedItemIndex())];
-        MessageManager::callAsync ([this] { chooseAudioThenOutput(); });
+        const int kind = (*kinds)[(size_t) jlimit (0, (int) kinds->size() - 1, aw->getComboBoxComponent ("src")->getSelectedItemIndex())];
+        MessageManager::callAsync ([this, kind] { chooseAudioThenOutput (kind); });
     }), true);
 }
 
-void PrismEditor::chooseAudioThenOutput()
+void PrismEditor::chooseAudioThenOutput (int kind)
 {
+    if (kind == 1) { exportSettings.audio = proc.getLoadedAudioFile(); chooseOutput(); return; }
+    if (kind == 2) { exportSettings.audio = proc.getLastRecording(); chooseOutput(); return; }
     chooser = std::make_unique<FileChooser> ("Choose the audio file to render", File::getSpecialLocation (File::userMusicDirectory),
                                              "*.wav;*.aif;*.aiff;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.caf");
     chooser->launchAsync (FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this] (const FileChooser& fc)
     {
-        const auto audio = fc.getResult();
-        if (! audio.existsAsFile()) return;
-        exportSettings.audio = audio;
-        MessageManager::callAsync ([this, audio]
-        {
-            chooser = std::make_unique<FileChooser> ("Save the video as",
-                          File::getSpecialLocation (File::userMoviesDirectory).getChildFile (audio.getFileNameWithoutExtension() + " - prism.mp4"), "*.mp4");
-            chooser->launchAsync (FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles | FileBrowserComponent::warnAboutOverwriting,
-                                  [this] (const FileChooser& fc2)
-            {
-                auto out = fc2.getResult();
-                if (out == File()) return;
-                exportSettings.output = out.withFileExtension ("mp4");
-                String err;
-                if (! canvas.startExport (exportSettings, err))
-                {
-                    AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Export", err);
-                    return;
-                }
-                exportButton.setButtonText ("CANCEL 0%");
-            });
-        });
+        if (! fc.getResult().existsAsFile()) return;
+        exportSettings.audio = fc.getResult();
+        MessageManager::callAsync ([this] { chooseOutput(); });
     });
+}
+
+void PrismEditor::chooseOutput()
+{
+    const String ext = exportSettings.codec == 2 ? "mov" : "mp4";
+    chooser = std::make_unique<FileChooser> ("Save the video as",
+                  File::getSpecialLocation (File::userMoviesDirectory).getChildFile (exportSettings.audio.getFileNameWithoutExtension() + " - prism." + ext), "*." + ext);
+    chooser->launchAsync (FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles | FileBrowserComponent::warnAboutOverwriting,
+                          [this, ext] (const FileChooser& fc)
+    {
+        auto out = fc.getResult();
+        if (out == File()) return;
+        exportSettings.output = out.withFileExtension (ext);
+        exportQueue.push_back (exportSettings);
+        if (canvas.getExportPhase() == 0) { exportReport.clear(); startNextExport(); }
+    });
+}
+
+void PrismEditor::startNextExport()
+{
+    while (! exportQueue.empty())
+    {
+        auto job = exportQueue.front();
+        exportQueue.pop_front();
+        String err;
+        if (canvas.startExport (job, err)) { exportStartMs = Time::currentTimeMillis(); return; }
+        exportReport.add ("Failed: " + job.output.getFileName() + " - " + err);
+    }
+    if (exportReport.isEmpty()) return;
+    const auto text = exportReport.joinIntoString ("\n");
+    for (auto& line : exportReport)
+        if (line.startsWith ("Saved: ")) File (line.fromFirstOccurrenceOf ("Saved: ", false, false)).revealToUser();
+    exportReport.clear();
+    AlertWindow::showMessageBoxAsync (MessageBoxIconType::InfoIcon, "Export", text);
 }

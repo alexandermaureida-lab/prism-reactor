@@ -6,7 +6,9 @@ namespace
 {
 const Colour kAccent (0xff4de2c5);
 const Colour kRec (0xffff4d6a);
-constexpr int kLabelW = 150, kRowH = 52, kHeaderH = 36, kRulerH = 18;
+constexpr int kLabelW = 150, kRowH = 52, kHeaderH = 68, kRulerH = 18;
+
+int gridDivisions (const AutomationEngine& e) { return e.getLoopBars() > 0 && e.getLoopBars() <= 32 ? e.getLoopBars() : 10; }
 
 String fmtTime (double t)
 {
@@ -28,7 +30,8 @@ public:
         g.setColour (Colours::white.withAlpha (0.035f));
         g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
         g.setColour (Colours::white.withAlpha (0.07f));
-        for (int i = 1; i < 10; ++i) g.drawVerticalLine (roundToInt (w * (float) i / 10.0f), 0.0f, h);
+        const int nd = gridDivisions (engine);
+        for (int i = 1; i < nd; ++i) g.drawVerticalLine (roundToInt (w * (float) i / (float) nd), 0.0f, h);
 
         auto toXY = [&] (const AutoPoint& p) { return Point<float> ((float) (p.t / D) * w, (1.0f - p.v) * (h - 10.0f) + 5.0f); };
         const auto& pts = lane->pts;
@@ -124,11 +127,15 @@ public:
         const double D = engine.getLoopLength();
         g.setColour (Colours::white.withAlpha (0.45f));
         g.setFont (11.0f);
-        for (int i = 0; i <= 10; ++i)
+        const int nd = gridDivisions (engine);
+        const bool bars = engine.getLoopBars() > 0 && engine.getLoopBars() <= 32;
+        const int labelEvery = (bars && nd > 16) ? 2 : 1;
+        for (int i = 0; i <= nd; ++i)
         {
-            const int x = roundToInt ((float) getWidth() * (float) i / 10.0f);
+            const int x = roundToInt ((float) getWidth() * (float) i / (float) nd);
             g.drawVerticalLine (x, (float) getHeight() - 5.0f, (float) getHeight());
-            if (i < 10) g.drawText (fmtTime (D * i / 10.0), x + 3, 0, 60, getHeight() - 2, Justification::centredLeft);
+            if (i < nd && i % labelEvery == 0)
+                g.drawText (bars ? String (i + 1) : fmtTime (D * i / (double) nd), x + 3, 0, 60, getHeight() - 2, Justification::centredLeft);
         }
         g.setColour (Colours::white);
         g.fillRect (jlimit (0, getWidth() - 1, roundToInt ((float) (engine.getTime() / D) * (float) getWidth())), 0, 2, getHeight());
@@ -189,11 +196,32 @@ AutomationPanel::AutomationPanel (AutomationEngine& e) : engine (e), ruler (std:
     const double lens[] = { 15, 30, 60, 120, 240, 480 };
     const char* names[] = { "loop 0:15", "loop 0:30", "loop 1:00", "loop 2:00", "loop 4:00", "loop 8:00" };
     for (int i = 0; i < 6; ++i) loopBox.addItem (names[i], i + 1);
-    int sel = 3;
-    for (int i = 0; i < 6; ++i) if (std::abs (lens[i] - engine.getLoopLength()) < 1.0) sel = i + 1;
-    loopBox.setSelectedId (sel, dontSendNotification);
-    loopBox.onChange = [this, lens] { engine.setLoopLength (lens[loopBox.getSelectedId() - 1]); repaint(); };
+    const int barOpts[] = { 1, 2, 4, 8, 16, 32 };
+    for (int i = 0; i < 6; ++i) loopBox.addItem (String (barOpts[i]) + (barOpts[i] == 1 ? " bar" : " bars"), 11 + i);
+    loopBox.onChange = [this, lens, barOpts]
+    {
+        const int id = loopBox.getSelectedId();
+        if (id >= 11) engine.setLoopBars (barOpts[id - 11]);
+        else if (id >= 1) engine.setLoopLength (lens[id - 1]);
+        repaint();
+    };
     addAndMakeVisible (loopBox);
+
+    syncBox.addItem ("Internal clock", 1);
+    syncBox.addItem ("Host transport", 2);
+    syncBox.setTooltip ("Internal: own loop and tempo. Host: follows the DAW play/stop and position (plugin only).");
+    syncBox.setSelectedId (engine.isHostSync() ? 2 : 1, dontSendNotification);
+    syncBox.onChange = [this] { engine.setHostSync (syncBox.getSelectedId() == 2); };
+    addAndMakeVisible (syncBox);
+
+    bpmCaption.setText ("BPM", dontSendNotification);
+    bpmCaption.setColour (Label::textColourId, Colours::white.withAlpha (0.55f));
+    bpmLabel.setEditable (true);
+    bpmLabel.setColour (Label::textColourId, kAccent);
+    bpmLabel.setColour (Label::outlineColourId, Colours::white.withAlpha (0.18f));
+    bpmLabel.setJustificationType (Justification::centred);
+    bpmLabel.onTextChange = [this] { engine.setBpm (bpmLabel.getText().getDoubleValue()); repaint(); };
+    addAndMakeVisible (bpmCaption); addAndMakeVisible (bpmLabel);
 
     addBox.onChange = [this]
     {
@@ -269,15 +297,21 @@ void AutomationPanel::rebuild()
 void AutomationPanel::resized()
 {
     auto area = getLocalBounds().reduced (10, 6);
-    auto head = area.removeFromTop (kHeaderH - 6);
+    auto head = area.removeFromTop (28);
     playButton.setBounds (head.removeFromLeft (64)); head.removeFromLeft (6);
     recButton.setBounds (head.removeFromLeft (56)); head.removeFromLeft (10);
     timeLabel.setBounds (head.removeFromLeft (120));
-    clearButton.setBounds (head.removeFromRight (64)); head.removeFromRight (6);
-    loadButton.setBounds (head.removeFromRight (56)); head.removeFromRight (6);
-    saveButton.setBounds (head.removeFromRight (56)); head.removeFromRight (10);
-    addBox.setBounds (head.removeFromRight (190)); head.removeFromRight (6);
-    loopBox.setBounds (head.removeFromRight (110));
+    loopBox.setBounds (head.removeFromRight (110)); head.removeFromRight (8);
+    bpmLabel.setBounds (head.removeFromRight (56)); head.removeFromRight (4);
+    bpmCaption.setBounds (head.removeFromRight (34)); head.removeFromRight (8);
+    syncBox.setBounds (head.removeFromRight (140));
+    area.removeFromTop (4);
+    auto head2 = area.removeFromTop (28);
+    addBox.setBounds (head2.removeFromLeft (220));
+    clearButton.setBounds (head2.removeFromRight (64)); head2.removeFromRight (6);
+    loadButton.setBounds (head2.removeFromRight (56)); head2.removeFromRight (6);
+    saveButton.setBounds (head2.removeFromRight (56));
+    area.removeFromTop (4);
 
     auto rulerRow = area.removeFromTop (kRulerH);
     rulerRow.removeFromLeft (kLabelW + 8);
@@ -304,6 +338,20 @@ void AutomationPanel::timerCallback()
     if (needsRebuild) { rebuild(); refreshAddList(); }
     if (clearArm > 0 && --clearArm == 0) clearButton.setButtonText ("CLEAR");
     if (playButton.getToggleState() != engine.isPlaying()) playButton.setToggleState (engine.isPlaying(), dontSendNotification);
+    {
+        const bool host = engine.isHostSync();
+        playButton.setEnabled (! host);
+        if (! bpmLabel.isBeingEdited()) bpmLabel.setText (String (engine.getBpm(), 1), dontSendNotification);
+        bpmLabel.setEditable (! host);
+        const int want = engine.getLoopBars() > 0 ? 0 : 0;
+        ignoreUnused (want);
+        int sel = 0;
+        const int bars = engine.getLoopBars();
+        if (bars > 0) { const int opts[] = { 1, 2, 4, 8, 16, 32 }; for (int i = 0; i < 6; ++i) if (opts[i] == bars) sel = 11 + i; }
+        else { const double lens[] = { 15, 30, 60, 120, 240, 480 }; for (int i = 0; i < 6; ++i) if (std::abs (lens[i] - engine.getLoopLength()) < 0.5) sel = i + 1; }
+        if (sel != 0 && loopBox.getSelectedId() != sel) loopBox.setSelectedId (sel, dontSendNotification);
+        if ((syncBox.getSelectedId() == 2) != host) syncBox.setSelectedId (host ? 2 : 1, dontSendNotification);
+    }
     timeLabel.setText (fmtTime (engine.getTime()) + " / " + fmtTime (engine.getLoopLength()), dontSendNotification);
     ruler->repaint();
     for (auto& r : rows)

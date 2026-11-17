@@ -9,13 +9,14 @@ class FfmpegSink : public VideoSink
 public:
     ~FfmpegSink() override { abort(); }
 
-    bool begin (const juce::File& out, int w, int h, int fps, double mbps, const juce::File& audio, juce::String& err) override
+    bool begin (const juce::File& out, int w, int h, int fps, double mbps, const juce::File& audio, int codec, juce::String& err) override
     {
         width = w; height = h;
         juce::String cmd = "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgba -s " + juce::String (w) + "x" + juce::String (h)
                          + " -r " + juce::String (fps) + " -i - ";
         if (audio.existsAsFile()) cmd += "-i \"" + audio.getFullPathName() + "\" -map 0:v -map 1:a -c:a aac -b:a 192k -shortest ";
-        cmd += "-vf vflip -c:v libx264 -pix_fmt yuv420p -b:v " + juce::String ((int) (mbps * 1000)) + "k \"" + out.getFullPathName() + "\"";
+        if (codec == 2) cmd += "-vf vflip -c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le \"" + out.getFullPathName() + "\"";
+        else cmd += juce::String ("-vf vflip -c:v ") + (codec == 1 ? "libx265 -tag:v hvc1" : "libx264") + " -pix_fmt yuv420p -b:v " + juce::String ((int) (mbps * 1000)) + "k \"" + out.getFullPathName() + "\"";
         pipe = popen (cmd.toRawUTF8(), "w");
         if (pipe == nullptr) { err = "ffmpeg not found"; return false; }
         return true;

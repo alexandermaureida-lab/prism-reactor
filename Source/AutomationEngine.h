@@ -27,6 +27,16 @@ public:
     // transport
     void setPlaying (bool);
     bool isPlaying() const { return playing; }
+    bool isRunning() const { return hostSync ? hostPlaying : playing; }   // clock actually advancing
+
+    // clock: internal (own loop, tempo-based grid) or following the host transport
+    void setHostSync (bool);
+    bool isHostSync() const { return hostSync; }
+    std::function<bool (double& seconds, bool& playing, double& bpm)> hostClock;   // set by the processor
+    double getBpm() const { return bpm; }
+    void setBpm (double b);
+    int getLoopBars() const { return loopBars; }          // 0 = loop length given in seconds
+    void setLoopBars (int bars);
     void setRecording (bool r) { recording = r; }
     bool isRecording() const { return recording; }
     double getTime() const { return time; }
@@ -69,6 +79,7 @@ private:
     std::map<juce::String, Touch> touch;
     std::map<juce::String, bool> holding;
 
-    bool playing = false, recording = false, applying = false, dirty = false;
-    double time = 0.0, loopLen = 60.0, lastTick = 0.0;
+    bool playing = false, recording = false, applying = false, dirty = false, hostSync = false, hostPlaying = false;
+    double time = 0.0, loopLen = 60.0, lastTick = 0.0, bpm = 120.0;
+    int loopBars = 0;
 };

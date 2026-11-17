@@ -30,7 +30,37 @@ inline constexpr FloatParam kFloatParams[] = {
     { "complexity", "complexity",  0.0f, 100.0f, 50.0f, 1.0f },
     { "fill",       "fill",        0.0f, 100.0f, 50.0f, 1.0f },
     { "contrast",   "contrast",    0.0f, 100.0f, 50.0f, 1.0f },
+    // image layer (ids start with "mx")
+    { "mxOpacity",  "image opacity",  0.0f, 100.0f, 100.0f, 1.0f },
+    { "mxScene",    "image scene mix",0.0f, 100.0f,  30.0f, 1.0f },
+    { "mxGlobal",   "image scene fx", 0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxZoom",     "image zoom",    25.0f, 300.0f, 100.0f, 1.0f },
+    { "mxRot",      "image rotate", -100.0f, 100.0f,  0.0f, 1.0f },
+    { "mxSpin",     "image spin",   -100.0f, 100.0f,  0.0f, 1.0f },
+    { "mxTwist",    "image twist",  -100.0f, 100.0f,  0.0f, 1.0f },
+    { "mxMirror",   "image mirror",   0.0f,  12.0f,   0.0f, 1.0f },
+    { "mxTiles",    "image tiles",    0.0f,   6.0f,   0.0f, 1.0f },
+    { "mxSlice",    "image slice",    0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxShatter",  "image shatter",  0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxPixel",    "image pixelate", 0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxDots",     "image halftone", 0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxWave",     "image wave",     0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxSplit",    "image rgb split",0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxEdge",     "image edges glow",0.0f, 100.0f,  0.0f, 1.0f },
+    { "mxPoster",   "image posterize",0.0f, 100.0f,   0.0f, 1.0f },
+    { "mxTint",     "image palette tint",0.0f, 100.0f, 0.0f, 1.0f },
+    { "mxBright",   "image brightness",0.0f, 100.0f, 50.0f, 1.0f },
+    { "mxContrast", "image contrast", 0.0f, 100.0f,  50.0f, 1.0f },
+    { "mxInvert",   "image invert",   0.0f,   1.0f,   0.0f, 1.0f },
+    { "mxReact",    "image react",    0.0f, 100.0f,  60.0f, 1.0f },
 };
+
+inline bool isMediaParam (const char* id) { return id[0] == 'm' && id[1] == 'x'; }
+
+inline constexpr const char* kBlendNames[] = { "over", "add", "multiply" };
+inline constexpr const char* kFitNames[]   = { "cover", "contain" };
+inline constexpr const char* kEdgeNames[]  = { "mirror", "clip" };
+inline constexpr const char* kDriveNames[] = { "all", "bass", "mids", "highs" };
 
 inline const FloatParam& findParam (const char* id)
 {

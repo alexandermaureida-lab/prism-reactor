@@ -1,11 +1,13 @@
 #pragma once
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_opengl/juce_opengl.h>
+#include <deque>
 #include <list>
 #include <map>
 #include <string>
 #include "PluginProcessor.h"
 #include "AutomationPanel.h"
+#include "TransportBar.h"
 #include "VideoExport.h"
 
 // Three-pass GLSL renderer: scene -> trails (ping-pong feedback) -> final grade.
@@ -16,7 +18,7 @@ public:
     ~GLCanvas() override;
 
     // Offline video export: renders the visuals frame by frame from an audio file.
-    struct ExportSettings { int width = 1920, height = 1080, fps = 30; double mbps = 16.0; juce::File audio, output; };
+    struct ExportSettings { int width = 1920, height = 1080, fps = 30, codec = 0; double mbps = 16.0; juce::File audio, output; };
     bool startExport (const ExportSettings&, juce::String& error);   // message thread
     void cancelExport() { exportCancel = true; }
     int  getExportPhase() const { return exportPhase.load(); }        // 0 idle, 1 rendering, 2 finishing
@@ -70,7 +72,16 @@ private:
     unsigned int vbo = 0;
 
     double lastTime = 0.0;
-    float phase = 0.0f, spinAng = 0.0f, huePhase = 0.0f;
+    float phase = 0.0f, spinAng = 0.0f, huePhase = 0.0f, mxSpinAng = 0.0f;
+    // automatic preview quality
+    float autoScale = 1.0f, frameEma = 0.0166f;
+    double lastScaleChange = 0.0;
+    // image layer
+    unsigned int mediaTex = 0, dummyTex = 0;
+    int mediaSeen = -1;
+    bool hasMedia = false;
+    float mediaAspect = 1.0f;
+    void updateMediaTexture();
     std::array<float, Analyzer::numBars> bars {};
 
     juce::CriticalSection jobLock;
@@ -136,6 +147,7 @@ private:
     EQCurve eqCurve;
     juce::Label eqLabel;
     juce::TextButton randomButton { "RANDOMIZE LOOK" };
+    std::unique_ptr<juce::Component> mediaRow;
     std::vector<Item> items;
     Row* lensStyleRow = nullptr;
     int contentHeight = 0;
@@ -143,31 +155,46 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TunePanel)
 };
 
+class FullscreenWindow;
+
 class PrismEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
     explicit PrismEditor (PrismProcessor&);
-    ~PrismEditor() override = default;
+    ~PrismEditor() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void mouseDown (const juce::MouseEvent&) override { grabKeyboardFocus(); }
 
 private:
     void timerCallback() override;
-    void onExportClicked();
-    void askExportOptions();
-    void chooseAudioThenOutput();
+    void askExportOptions (bool preferRecording = false);
+    void chooseAudioThenOutput (int audioKind);
+    void chooseOutput();
+    void startNextExport();
+    void toggleFullscreen();
+    void setPanelVisible (bool);
+
     PrismProcessor& proc;
     GLCanvas canvas;
-    juce::ComboBox previewBox;
-    juce::TextButton exportButton { "EXPORT VIDEO" };
-    GLCanvas::ExportSettings exportSettings;
-    std::unique_ptr<juce::FileChooser> chooser;
+    TransportBar transportBar;
     TunePanel panel;
     juce::Viewport viewport;
-    juce::Label title;
-    juce::TextButton autoButton { "AUTOMATION" };
+    juce::ComboBox presetBox, previewBox;
+    juce::TextButton presetSave { "SAVE" }, presetLoad { "LOAD" };
+    juce::TextButton autoButton { "AUTOMATION" }, exportButton { "EXPORT VIDEO" }, fullButton { "FULLSCREEN" }, cancelButton { "CANCEL" };
+    juce::Label statusLabel;
     AutomationPanel autoPanel;
+
+    GLCanvas::ExportSettings exportSettings;
+    std::deque<GLCanvas::ExportSettings> exportQueue;
+    juce::StringArray exportReport;
+    juce::int64 exportStartMs = 0;
+    bool panelVisible = true;
+    std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<FullscreenWindow> fullscreen;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PrismEditor)
 };

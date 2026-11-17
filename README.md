@@ -89,3 +89,11 @@ Press **AUTOMATION** (top right) to open the timeline strip: PLAY, ● REC (move
 ## Preview resolution & video export in the Standalone / plugin (macOS)
 - **Preview NN%** (top right, all versions): renders the on‑screen preview at a lower resolution to use less GPU (100/75/50/35/25 %). It does not change exports. Saved with the state (web: in the browser).
 - **EXPORT VIDEO** (Standalone/plugin, macOS): renders the visuals *offline* frame by frame from an audio file you pick (WAV/AIFF/MP3/M4A/FLAC) to an H.264 + AAC MP4 (720p–4K, 24/30/60 fps, 8–60 Mbps) using AVFoundation. Automation lanes are baked in (from t = 0). The live audio input is not used for export.
+
+## Standalone / plugin: more tools
+- **Audio source strip** (under the visuals): *Live input* or *Audio file* played by the plugin itself (OPEN AUDIO, PLAY/PAUSE, seek). The file is heard and analysed, so the Standalone works without BlackHole or an unmuted mic. **REC AUDIO** records whatever the plugin is listening to into a WAV; when you stop, the export dialog opens with that recording preselected.
+- **Automation clock**: *Internal clock* (own loop, BPM and loop lengths in bars) or *Host transport* (follows the DAW play/stop/position and tempo; plugin only). Scene changes are just a step lane on the *Scene* parameter.
+- **Image layer** (PNG/JPG/GIF) with its own controls, same as the web version (video stays web-only for now).
+- **Presets**: factory presets (also exposed to the host as programs) and SAVE/LOAD `.prism` files.
+- **FULLSCREEN** window with only the visuals (Esc/F to close), **Preview auto** (adapts resolution to the frame rate) and keyboard shortcuts: H hide panel, A automation, F fullscreen, Space play/pause the file, 1-8 scenes, R randomize.
+- **Export**: H.264 / H.265 (MP4) or ProRes 422 (MOV), export queue, progress with time remaining.

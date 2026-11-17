@@ -1,5 +1,6 @@
 #include "AutomationEngine.h"
 #include <cmath>
+#include <algorithm>
 
 using namespace juce;
 
@@ -64,7 +65,28 @@ void AutomationEngine::setPlaying (bool p)
     if (p == playing) return;
     playing = p;
     if (playing) { lastTick = Time::getMillisecondCounterHiRes() * 0.001; dirty = true; startTimerHz (60); }
-    else { stopTimer(); touch.clear(); }
+    else { if (! hostSync) stopTimer(); touch.clear(); }
+}
+
+void AutomationEngine::setHostSync (bool h)
+{
+    if (h == hostSync) return;
+    hostSync = h;
+    touch.clear();
+    if (hostSync) { stopTimer(); lastTick = Time::getMillisecondCounterHiRes() * 0.001; startTimerHz (60); }
+    else { hostPlaying = false; if (! playing) stopTimer(); else lastTick = Time::getMillisecondCounterHiRes() * 0.001; }
+}
+
+void AutomationEngine::setBpm (double b)
+{
+    bpm = jlimit (20.0, 300.0, b);
+    if (loopBars > 0) { loopLen = loopBars * 4.0 * 60.0 / bpm; if (time >= loopLen) time = 0.0; }
+}
+
+void AutomationEngine::setLoopBars (int bars)
+{
+    loopBars = jmax (0, bars);
+    if (loopBars > 0) { loopLen = loopBars * 4.0 * 60.0 / bpm; if (time >= loopLen) time = 0.0; }
 }
 
 void AutomationEngine::setTime (double t)
@@ -76,6 +98,7 @@ void AutomationEngine::setTime (double t)
 
 void AutomationEngine::setLoopLength (double s)
 {
+    loopBars = 0;
     loopLen = jmax (5.0, s);
     if (time >= loopLen) time = 0.0;
 }
@@ -129,8 +152,26 @@ void AutomationEngine::timerCallback()
     const double now = Time::getMillisecondCounterHiRes() * 0.001;
     double dt = now - lastTick; lastTick = now;
     if (dt > 0.25) dt = 0.0;
-    time += dt;
-    if (time >= loopLen) { time = std::fmod (time, loopLen); touch.clear(); }
+
+    if (hostSync)
+    {
+        double t = 0.0, b = 0.0; bool pl = false;
+        if (hostClock && hostClock (t, pl, b))
+        {
+            hostPlaying = pl;
+            if (b > 0.0 && std::abs (b - bpm) > 0.01) setBpm (b);
+            const double nt = std::fmod (jmax (0.0, t), loopLen);
+            if (nt < time - 0.001) touch.clear();
+            time = nt;
+        }
+        else hostPlaying = false;
+        if (! hostPlaying && ! dirty) return;
+    }
+    else
+    {
+        time += dt;
+        if (time >= loopLen) { time = std::fmod (time, loopLen); touch.clear(); }
+    }
 
     if (recording)
         for (auto& kv : holding)
@@ -169,7 +210,7 @@ void AutomationEngine::write (AutoLane& l, float v, double t)
 
 void AutomationEngine::parameterValueChanged (int index, float newValue)
 {
-    if (applying || ! recording || ! playing || ! onMessageThread()) return;
+    if (applying || ! recording || ! isRunning() || ! onMessageThread()) return;
     auto it = idByIndex.find (index);
     if (it == idByIndex.end()) return;
     bool created = find (it->second) == nullptr;
@@ -188,6 +229,9 @@ var AutomationEngine::toVar() const
 {
     auto* root = new DynamicObject();
     root->setProperty ("loop", loopLen);
+    root->setProperty ("bpm", bpm);
+    root->setProperty ("bars", loopBars);
+    root->setProperty ("hostSync", hostSync);
     Array<var> arr;
     for (auto& l : lanes)
     {
@@ -208,7 +252,10 @@ void AutomationEngine::fromVar (const var& v)
     lanes.clear(); touch.clear();
     if (auto* o = v.getDynamicObject())
     {
+        if (o->hasProperty ("bpm")) bpm = jlimit (20.0, 300.0, (double) o->getProperty ("bpm"));
         if (o->hasProperty ("loop")) setLoopLength ((double) o->getProperty ("loop"));
+        if (o->hasProperty ("bars") && (int) o->getProperty ("bars") > 0) setLoopBars ((int) o->getProperty ("bars"));
+        if (o->hasProperty ("hostSync")) setHostSync ((bool) o->getProperty ("hostSync"));
         if (auto* arr = o->getProperty ("lanes").getArray())
             for (auto& item : *arr)
             {

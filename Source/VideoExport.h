@@ -10,7 +10,7 @@ class VideoSink
 public:
     virtual ~VideoSink() = default;
     virtual bool begin (const juce::File& out, int width, int height, int fps, double megabitsPerSecond,
-                        const juce::File& audioFile, juce::String& error) = 0;
+                        const juce::File& audioFile, int codec, juce::String& error) = 0;   // codec: 0 H.264, 1 H.265, 2 ProRes 422 (.mov)
     virtual bool addFrame (const juce::uint8* rgbaBottomUp, juce::String& error) = 0;
     virtual bool finish (juce::String& error) = 0;   // blocking (muxing); call off the GL / message thread
     virtual void abort() = 0;
