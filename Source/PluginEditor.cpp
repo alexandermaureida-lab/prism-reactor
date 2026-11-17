@@ -915,7 +915,8 @@ bool PrismEditor::keyPressed (const KeyPress& k)
 void PrismEditor::toggleFullscreen()
 {
     if (fullscreen != nullptr) { fullscreen.reset(); return; }
-    fullscreen = std::make_unique<FullscreenWindow> (proc, [this] { MessageManager::callAsync ([safe = SafePointer<PrismEditor> (this)] { if (safe != nullptr) safe->fullscreen.reset(); }); });
+    Component::SafePointer<PrismEditor> safe (this);
+    fullscreen = std::make_unique<FullscreenWindow> (proc, [safe] { MessageManager::callAsync ([safe] { if (safe != nullptr) safe->fullscreen.reset(); }); });
 }
 
 //==============================================================================
