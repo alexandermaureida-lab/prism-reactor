@@ -179,6 +179,7 @@ void GLCanvas::renderOpenGL()
             job = std::move (pendingJob);
             phase = spinAng = huePhase = 0.0f;
             fbScene.release();                       // force fresh (cleared) targets
+            shownScene = -1; transOn = false;
             ctx.setSwapInterval (0);                 // render as fast as the GPU allows
         }
     }
@@ -268,6 +269,17 @@ void GLCanvas::renderOpenGL()
     auto i1 = [] (Pass& p, const char* n, int v)   { const int l = p.loc (n); if (l >= 0) glUniform1i ((GLint) l, v); };
     auto f2 = [] (Pass& p, const char* n, float a, float b) { const int l = p.loc (n); if (l >= 0) glUniform2f ((GLint) l, a, b); };
 
+    // scene change: cut, or a timed transition between the previous and the new scene
+    {
+        const int want = (int) P ("scene"), style = (int) P ("transition");
+        if (want != shownScene)
+        {
+            if (style == 0 || shownScene < 0) { shownScene = want; transOn = false; }
+            else { prevScene = (transOn && transT < 0.5f) ? prevScene : shownScene; shownScene = want; transT = 0.0f; transOn = true; }
+        }
+        if (transOn) { transT += dt / jmax (0.05f, P ("transTime")); if (transT >= 1.0f) transOn = false; }
+    }
+
     // pass 1: scene
     fbScene.makeCurrentRenderingTarget();
     {
@@ -277,7 +289,7 @@ void GLCanvas::renderOpenGL()
         if (const int l = S.loc ("uBands"); l >= 0) glUniform4f ((GLint) l, bass, lowMid, mid, high);
         f1 (S, "uLevel", level); f1 (S, "uBeat", beat);
         if (const int l = S.loc ("uBars"); l >= 0) glUniform1fv ((GLint) l, Analyzer::numBars, bars.data());
-        i1 (S, "uScene", (int) P ("scene"));
+        i1 (S, "uScene", shownScene);
         i1 (S, "uPattern", (int) P ("pattern"));
         i1 (S, "uShape", (int) P ("shape"));
         i1 (S, "uMat", (int) P ("material"));
@@ -305,7 +317,18 @@ void GLCanvas::renderOpenGL()
         f1 (S, "uMxInvert", P ("mxInvert")); f1 (S, "uMxReact", P ("mxReact") / 100.0f * 1.6f);
         f1 (S, "uMxClip", P ("mxEdges"));
         i1 (S, "uMxFit", (int) P ("mxFit")); i1 (S, "uMxDrive", (int) P ("mxDrive")); i1 (S, "uMxBlend", (int) P ("mxBlend"));
-        drawQuad (S);
+        if (transOn)
+        {
+            const float ease = transT * transT * (3.0f - 2.0f * transT);
+            const int style = (int) P ("transition");
+            i1 (S, "uScene", prevScene); f1 (S, "uAlpha", 1.0f); i1 (S, "uTransStyle", 0);
+            drawQuad (S);
+            glEnable (GL_BLEND); glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            i1 (S, "uScene", shownScene); f1 (S, "uAlpha", ease); i1 (S, "uTransStyle", style == 2 ? 1 : style == 3 ? 2 : 0);
+            drawQuad (S);
+            glDisable (GL_BLEND);
+        }
+        else { f1 (S, "uAlpha", 1.0f); i1 (S, "uTransStyle", 0); drawQuad (S); }
     }
     fbScene.releaseAsRenderingTarget();
 
@@ -575,6 +598,8 @@ TunePanel::TunePanel (PrismProcessor& p) : proc (p), eqCurve (p)
     for (auto* id : { "spin", "hueDrift", "vignette" }) addSlider (id);
     addCombo ("palette", "palette");
     addSlider ("hue");
+    addCombo ("transition", "scene change");
+    addSlider ("transTime");
 
     randomButton.setColour (TextButton::textColourOffId, kAccent);
     randomButton.setColour (TextButton::buttonColourId, Colours::white.withAlpha (0.04f));

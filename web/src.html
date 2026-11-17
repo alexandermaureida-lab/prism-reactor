@@ -259,6 +259,7 @@ input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); backgro
 
   /* ---------------- parameters + tune panel ---------------- */
   var val = { scene: 0, lensStyle: 0, palette: 0 };
+  var shownScene = -1, prevScene = 0, transT = 0, transOn = false;
   var eq = [0, 0, 0, 0, 0, 0];
   var rows = {}, holding = {}, applying = false;
   var body = $("#tune-body");
@@ -308,6 +309,13 @@ input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); backgro
   slider("vignette", "vignette", 0, 100, 25, 1);
   select("palette", "palette", PAL.map(function (p) { return p.n; }), 0);
   slider("hue", "hue", 0, 100, 0, 1);
+  select("transition", "scene change", ["cut (jump)", "crossfade", "dissolve", "iris"], 1);
+  slider("transTime", "change time", 1, 80, 15, 1);
+  (function () {
+    var o = rows.transTime.row.querySelector("output"), i = rows.transTime.input;
+    function f() { o.textContent = (parseFloat(i.value) / 10).toFixed(1) + "s"; }
+    i.addEventListener("input", f); var oset = rows.transTime.set; rows.transTime.set = function (x) { oset(x); f(); }; f();
+  })();
 
   var MXIDS = [];
   function mx(kind, id, a, b, c, d, e) { MXIDS.push(id); if (kind === "s") slider(id, a, b, c, d, e); else select(id, a, b, c); }
@@ -1275,6 +1283,13 @@ input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); backgro
 
       var hasMedia = uploadMedia();
 
+      // scene change: cut, or a timed transition between the previous and the new scene
+      if (val.scene !== shownScene) {
+        if (val.transition === 0 || shownScene < 0) { shownScene = val.scene; transOn = false; }
+        else { prevScene = transOn && transT < 0.5 ? prevScene : shownScene; shownScene = val.scene; transT = 0; transOn = true; }
+      }
+      if (transOn) { transT += dt / Math.max(0.05, val.transTime / 10); if (transT >= 1) transOn = false; }
+
       // pass 1: scene
       gl.bindFramebuffer(gl.FRAMEBUFFER, targets[0].fb); gl.viewport(0, 0, w, h);
       var S = P.scene; gl.useProgram(S.pr);
@@ -1300,7 +1315,15 @@ input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); backgro
       U1("uMxBright", c100("mxBright")); U1("uMxContrast", c100("mxContrast")); U1("uMxInvert", val.mxInvert); U1("uMxReact", c100("mxReact") * 1.6);
       U1("uMxClip", val.mxEdges);
       gl.uniform1i(S.u("uMxFit"), val.mxFit); gl.uniform1i(S.u("uMxDrive"), val.mxDrive); gl.uniform1i(S.u("uMxBlend"), val.mxBlend);
-      quad();
+      if (transOn) {
+        var ease = transT * transT * (3 - 2 * transT);
+        gl.uniform1i(S.u("uScene"), prevScene); gl.uniform1f(S.u("uAlpha"), 1); gl.uniform1i(S.u("uTransStyle"), 0);
+        quad();
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.uniform1i(S.u("uScene"), shownScene); gl.uniform1f(S.u("uAlpha"), ease); gl.uniform1i(S.u("uTransStyle"), val.transition === 2 ? 1 : val.transition === 3 ? 2 : 0);
+        quad();
+        gl.disable(gl.BLEND);
+      } else { gl.uniform1f(S.u("uAlpha"), 1); gl.uniform1i(S.u("uTransStyle"), 0); quad(); }
 
       // pass 2: trails (feedback, ping-pong)
       var nxt = cur === 1 ? 2 : 1;

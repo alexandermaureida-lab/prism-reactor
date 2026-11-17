@@ -78,6 +78,9 @@ private:
     double lastScaleChange = 0.0;
     // image layer
     unsigned int mediaTex = 0, dummyTex = 0;
+    int shownScene = -1, prevScene = 0;
+    float transT = 0.0f;
+    bool transOn = false;
     int mediaSeen = -1;
     bool hasMedia = false;
     float mediaAspect = 1.0f;

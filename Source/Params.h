@@ -30,6 +30,7 @@ inline constexpr FloatParam kFloatParams[] = {
     { "complexity", "complexity",  0.0f, 100.0f, 50.0f, 1.0f },
     { "fill",       "fill",        0.0f, 100.0f, 50.0f, 1.0f },
     { "contrast",   "contrast",    0.0f, 100.0f, 50.0f, 1.0f },
+    { "transTime",  "change time",   0.1f,   8.0f,   1.5f, 0.1f },
     // image layer (ids start with "mx")
     { "mxOpacity",  "image opacity",  0.0f, 100.0f, 100.0f, 1.0f },
     { "mxScene",    "image scene mix",0.0f, 100.0f,  30.0f, 1.0f },
@@ -57,6 +58,7 @@ inline constexpr FloatParam kFloatParams[] = {
 
 inline bool isMediaParam (const char* id) { return id[0] == 'm' && id[1] == 'x'; }
 
+inline constexpr const char* kTransitionNames[] = { "cut (jump)", "crossfade", "dissolve", "iris" };
 inline constexpr const char* kBlendNames[] = { "over", "add", "multiply" };
 inline constexpr const char* kFitNames[]   = { "cover", "contain" };
 inline constexpr const char* kEdgeNames[]  = { "mirror", "clip" };

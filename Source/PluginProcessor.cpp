@@ -15,6 +15,7 @@ APVTS::ParameterLayout PrismProcessor::createLayout()
     auto names = [] (auto& arr) { juce::StringArray s; for (auto* n : arr) s.add (n); return s; };
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "scene", 1 }, "Scene", names (kSceneNames), 0));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "lensStyle", 1 }, "Lens style", names (kLensNames), 0));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "transition", 1 }, "Scene change", names (kTransitionNames), 1));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "palette", 1 }, "Palette", names (kPaletteNames), 0));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "pattern", 1 }, "Pattern", names (kPatternNames), 0));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "shape", 1 }, "Shape", names (kShapeNames), 0));
@@ -111,7 +112,7 @@ void PrismProcessor::setCurrentProgram (int idx)
     };
     // reset the look (not the input gain, EQ or image layer), then apply the preset
     for (const auto& d : kFloatParams)
-        if (! isMediaParam (d.id) && std::strcmp (d.id, "gain") != 0) setv (d.id, d.def);
+        if (! isMediaParam (d.id) && std::strcmp (d.id, "gain") != 0 && std::strcmp (d.id, "transTime") != 0) setv (d.id, d.def);
     for (auto* id : { "scene", "lensStyle", "palette", "pattern", "shape", "material" }) setv (id, 0.0f);
     for (auto& kv : factoryPresets()[(size_t) idx].v) setv (kv.first, kv.second);
 }

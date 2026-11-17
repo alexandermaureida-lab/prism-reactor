@@ -97,3 +97,6 @@ Press **AUTOMATION** (top right) to open the timeline strip: PLAY, ● REC (move
 - **Presets**: factory presets (also exposed to the host as programs) and SAVE/LOAD `.prism` files.
 - **FULLSCREEN** window with only the visuals (Esc/F to close), **Preview auto** (adapts resolution to the frame rate) and keyboard shortcuts: H hide panel, A automation, F fullscreen, Space play/pause the file, 1-8 scenes, R randomize.
 - **Export**: H.264 / H.265 (MP4) or ProRes 422 (MOV), export queue, progress with time remaining.
+
+## Scene transitions
+Changing scene (by hand, by shortcut or from an automation lane) now blends between the old and the new scene: **scene change** = *cut (jump)* / *crossfade* / *dissolve* / *iris*, with **change time** (0.1–8 s). Pick *cut* for the old instant jump. Works in the web version, the plugin/Standalone and the video export.

@@ -41,6 +41,8 @@ uniform float uLevel;
 uniform float uBeat;
 uniform float uBars[64];
 uniform int   uScene;
+uniform float uAlpha;       // scene transition: opacity of this scene over the previous one
+uniform int   uTransStyle;  // 0 cut/fade, 1 dissolve, 2 iris
 uniform float uReact;     // 0..2
 uniform float uChaos;     // 0..1
 uniform float uSym;       // 0..12 segments
@@ -648,7 +650,10 @@ void main()
     col = pow(max(col, vec3(0.0)), vec3(mix(0.6, 1.4, uContrast)));
     col += pal(0.1) * 0.03 * (1.0 + gBeat * 2.0);
     col = 1.0 - exp(-col * 1.3);
-    fragColor = vec4(col, 1.0);
+    float ta = uAlpha;
+    if (uTransStyle == 1) ta = smoothstep(0.0, 1.0, (uAlpha * 1.3 - 0.15 - fbm(vUV * 5.0 + 3.1) * 0.3) / 0.3 + 0.5);
+    else if (uTransStyle == 2) ta = smoothstep(-0.08, 0.08, uAlpha * 1.7 - 0.1 - length((vUV - 0.5) * vec2(uRes.x / uRes.y, 1.0)));
+    fragColor = vec4(col, clamp(ta, 0.0, 1.0));
 }
 )GLSL";
 inline const char* const feedback = R"GLSL(in vec2 vUV;

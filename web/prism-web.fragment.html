@@ -279,6 +279,8 @@ uniform float uLevel;
 uniform float uBeat;
 uniform float uBars[64];
 uniform int   uScene;
+uniform float uAlpha;       // scene transition: opacity of this scene over the previous one
+uniform int   uTransStyle;  // 0 cut/fade, 1 dissolve, 2 iris
 uniform float uReact;     // 0..2
 uniform float uChaos;     // 0..1
 uniform float uSym;       // 0..12 segments
@@ -886,7 +888,10 @@ void main()
     col = pow(max(col, vec3(0.0)), vec3(mix(0.6, 1.4, uContrast)));
     col += pal(0.1) * 0.03 * (1.0 + gBeat * 2.0);
     col = 1.0 - exp(-col * 1.3);
-    fragColor = vec4(col, 1.0);
+    float ta = uAlpha;
+    if (uTransStyle == 1) ta = smoothstep(0.0, 1.0, (uAlpha * 1.3 - 0.15 - fbm(vUV * 5.0 + 3.1) * 0.3) / 0.3 + 0.5);
+    else if (uTransStyle == 2) ta = smoothstep(-0.08, 0.08, uAlpha * 1.7 - 0.1 - length((vUV - 0.5) * vec2(uRes.x / uRes.y, 1.0)));
+    fragColor = vec4(col, clamp(ta, 0.0, 1.0));
 }
 `,
   feedback: `in vec2 vUV;
@@ -1027,6 +1032,7 @@ void main()
 
   /* ---------------- parameters + tune panel ---------------- */
   var val = { scene: 0, lensStyle: 0, palette: 0 };
+  var shownScene = -1, prevScene = 0, transT = 0, transOn = false;
   var eq = [0, 0, 0, 0, 0, 0];
   var rows = {}, holding = {}, applying = false;
   var body = $("#tune-body");
@@ -1076,6 +1082,13 @@ void main()
   slider("vignette", "vignette", 0, 100, 25, 1);
   select("palette", "palette", PAL.map(function (p) { return p.n; }), 0);
   slider("hue", "hue", 0, 100, 0, 1);
+  select("transition", "scene change", ["cut (jump)", "crossfade", "dissolve", "iris"], 1);
+  slider("transTime", "change time", 1, 80, 15, 1);
+  (function () {
+    var o = rows.transTime.row.querySelector("output"), i = rows.transTime.input;
+    function f() { o.textContent = (parseFloat(i.value) / 10).toFixed(1) + "s"; }
+    i.addEventListener("input", f); var oset = rows.transTime.set; rows.transTime.set = function (x) { oset(x); f(); }; f();
+  })();
 
   var MXIDS = [];
   function mx(kind, id, a, b, c, d, e) { MXIDS.push(id); if (kind === "s") slider(id, a, b, c, d, e); else select(id, a, b, c); }
@@ -2043,6 +2056,13 @@ void main()
 
       var hasMedia = uploadMedia();
 
+      // scene change: cut, or a timed transition between the previous and the new scene
+      if (val.scene !== shownScene) {
+        if (val.transition === 0 || shownScene < 0) { shownScene = val.scene; transOn = false; }
+        else { prevScene = transOn && transT < 0.5 ? prevScene : shownScene; shownScene = val.scene; transT = 0; transOn = true; }
+      }
+      if (transOn) { transT += dt / Math.max(0.05, val.transTime / 10); if (transT >= 1) transOn = false; }
+
       // pass 1: scene
       gl.bindFramebuffer(gl.FRAMEBUFFER, targets[0].fb); gl.viewport(0, 0, w, h);
       var S = P.scene; gl.useProgram(S.pr);
@@ -2068,7 +2088,15 @@ void main()
       U1("uMxBright", c100("mxBright")); U1("uMxContrast", c100("mxContrast")); U1("uMxInvert", val.mxInvert); U1("uMxReact", c100("mxReact") * 1.6);
       U1("uMxClip", val.mxEdges);
       gl.uniform1i(S.u("uMxFit"), val.mxFit); gl.uniform1i(S.u("uMxDrive"), val.mxDrive); gl.uniform1i(S.u("uMxBlend"), val.mxBlend);
-      quad();
+      if (transOn) {
+        var ease = transT * transT * (3 - 2 * transT);
+        gl.uniform1i(S.u("uScene"), prevScene); gl.uniform1f(S.u("uAlpha"), 1); gl.uniform1i(S.u("uTransStyle"), 0);
+        quad();
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.uniform1i(S.u("uScene"), shownScene); gl.uniform1f(S.u("uAlpha"), ease); gl.uniform1i(S.u("uTransStyle"), val.transition === 2 ? 1 : val.transition === 3 ? 2 : 0);
+        quad();
+        gl.disable(gl.BLEND);
+      } else { gl.uniform1f(S.u("uAlpha"), 1); gl.uniform1i(S.u("uTransStyle"), 0); quad(); }
 
       // pass 2: trails (feedback, ping-pong)
       var nxt = cur === 1 ? 2 : 1;
